@@ -20,15 +20,6 @@ void smtpCallback(SMTP_Status status);
 
 #include <GyverPortal.h>
 GyverPortal ui;
-byte switchState;
-#define enableSleepTime 0x01
-#define enableSignalSleepTime 0x02
-#define enableAttenuationSleepTime 0x04
-#define enableSunriseTime 0x08
-#define FLAG5 0x10
-#define FLAG6 0x20
-#define FLAG7 0x40
-#define FLAG8 0x80
 bool eepromNeedChanged = false;
 time_t epochTime;
 struct tm *ptm;
@@ -42,17 +33,22 @@ void build() {
   GP.BUILD_BEGIN(GP_DARK);
   GP.PAGE_TITLE("SmartWaterMeter Olimp", "SmartWaterMeter Olimp");
   GP.TITLE("SmartWaterMeter Olimp", "t1");
-  GP.HR(); // Текущие дата и время
+
+  GP.BLOCK_BEGIN(GP_THIN, "", "Текущие дата и время");
   GP.DATE("date", valDate); GP.BREAK();
-  GP.TIME("time", valTime); GP.BREAK();
-  GP.LABEL("128", "Горячая", PSTR("#ff0000"));
-  GP.LABEL("90", "°C", PSTR("#ff0000"));
-  GP.LABEL("128", "Холодная", PSTR("#0000ff"));
-  GP.LABEL("52", "°C", PSTR("#0000ff"));
-  GP.HR();
-  GP.LABEL("90", "Подача, °C", PSTR("#ff0000"));
-  GP.LABEL("52", "Обратка, °C", PSTR("#0000ff"));
-  GP.HR();
+  GP.TIME("time", valTime);
+  GP.BLOCK_END();
+
+  GP.BLOCK_BEGIN(GP_THIN, "", "Водоснабжение");
+  GP.LABEL("Горячая "); GP.LABEL("128", "", PSTR("#ffb2b2")); GP.LABEL("м³  "); GP.LABEL("90", "", PSTR("#ffb2b2")); GP.LABEL("°C"); GP.BREAK();
+  GP.LABEL("Холодная "); GP.LABEL("178", "", PSTR("#b2b2ff")); GP.LABEL("м³  "); GP.LABEL("52", "", PSTR("#b2b2ff")); GP.LABEL("°C");
+  GP.BLOCK_END();
+
+  GP.BLOCK_BEGIN(GP_THIN, "", "Отопление");
+  GP.LABEL("Подача "); GP.LABEL("90", "", PSTR("#ffb2b2")); GP.LABEL("°C"); GP.BREAK();
+  GP.LABEL("Обратка "); GP.LABEL("52", "", PSTR("#b2b2ff")); GP.LABEL("°C");
+  GP.BLOCK_END();
+
   GP.BUILD_END();
 }
 
@@ -70,7 +66,6 @@ void WriteEeprom(){
   if (eepromNeedChanged){
     if (checkTimespan(eepromTimespan)) //360мин - записывать через 6 часов после последнего изменения
     {
-      EEPROM.put(0, switchState); //Сохраняем состояние свичей
       EEPROM.commit();
       eepromNeedChanged = false;
     }
