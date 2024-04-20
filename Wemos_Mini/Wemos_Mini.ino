@@ -28,6 +28,28 @@ GPdate valDate;
 GPtime valTime;
 uint32_t eepromTimespan;
 
+#include <OneWire.h>
+#include <DallasTemperature.h>
+
+#define ONE_WIRE_BUS 0 // Пин подключения OneWire шины, 0 (D3)
+OneWire oneWire(ONE_WIRE_BUS); // Подключаем бибилотеку OneWire
+DallasTemperature sensors(&oneWire); // Подключаем бибилотеку DallasTemperature
+
+// Размер массива определяем исходя из количества установленных датчиков
+DeviceAddress temperatureSensors[4];
+DeviceAddress tempSensors[4] = {0x2840263E00000052, 0x2884263E00000011, 0x2874F33D00000067, 0x2825EF3D00000023};
+uint8_t deviceCount = 0;
+
+// Функция вывода адреса датчика 
+void printAddress(DeviceAddress deviceAddress)
+{
+  for (uint8_t i = 0; i < 8; i++)
+  {
+    if (deviceAddress[i] < 16) Serial.print("0");
+    Serial.print(deviceAddress[i], HEX); // Выводим адрес датчика в HEX формате 
+  }
+}
+
 //Конструктор страницы
 void build() {
   GP.BUILD_BEGIN(GP_DARK);
@@ -39,14 +61,39 @@ void build() {
   GP.TIME("time", valTime);
   GP.BLOCK_END();
 
+  sensors.requestTemperatures();
+  Serial.println();
+  for (int i = 0; i < deviceCount; i++)
+  {
+    printAddress(temperatureSensors[i]); // Выводим название датчика
+    Serial.print(": ");
+    Serial.println(sensors.getTempC(temperatureSensors[i])); // Выводим температуру с датчика
+  }
   GP.BLOCK_BEGIN(GP_THIN, "", "Водоснабжение");
-  GP.LABEL("Горячая "); GP.LABEL("128", "", PSTR("#ffb2b2")); GP.LABEL("м³  "); GP.LABEL("90", "", PSTR("#ffb2b2")); GP.LABEL("°C"); GP.BREAK();
-  GP.LABEL("Холодная "); GP.LABEL("178", "", PSTR("#b2b2ff")); GP.LABEL("м³  "); GP.LABEL("52", "", PSTR("#b2b2ff")); GP.LABEL("°C");
+  GP.LABEL("Горячая ");
+  GP.LABEL("128", "", PSTR("#ffb2b2"));
+  GP.LABEL("м³");
+  GP.BREAK();
+  GP.LABEL(String(sensors.getTempC(temperatureSensors[1])), "", PSTR("#ffb2b2"));
+  GP.LABEL("°C");
+  GP.BREAK();
+  GP.BREAK();
+  GP.LABEL("Холодная ");
+  GP.LABEL("178", "", PSTR("#b2b2ff"));
+  GP.LABEL("м³");
+  GP.BREAK();
+  GP.LABEL(String(sensors.getTempC(temperatureSensors[0])), "", PSTR("#b2b2ff"));
+  GP.LABEL("°C");
   GP.BLOCK_END();
 
   GP.BLOCK_BEGIN(GP_THIN, "", "Отопление");
-  GP.LABEL("Подача "); GP.LABEL("90", "", PSTR("#ffb2b2")); GP.LABEL("°C"); GP.BREAK();
-  GP.LABEL("Обратка "); GP.LABEL("52", "", PSTR("#b2b2ff")); GP.LABEL("°C");
+  GP.LABEL("Подача ");
+  GP.LABEL(String(sensors.getTempC(temperatureSensors[3])), "", PSTR("#ffb2b2"));
+  GP.LABEL("°C");
+  GP.BREAK();
+  GP.LABEL("Обратка ");
+  GP.LABEL(String(sensors.getTempC(temperatureSensors[2])), "", PSTR("#b2b2ff"));
+  GP.LABEL("°C");
   GP.BLOCK_END();
 
   GP.BUILD_END();
@@ -169,6 +216,15 @@ void setup() {
   Serial.print("IP address: ");
   Serial.println(WiFi.localIP());
   EEPROM.begin(4096); //Активируем EEPROM
+
+  sensors.begin(); // Инициализируем датчики
+  deviceCount = sensors.getDeviceCount(); // Получаем количество обнаруженных датчиков
+
+  for (uint8_t index = 0; index < deviceCount; index++)
+  {
+    sensors.getAddress(temperatureSensors[index], index);
+  }
+
   // подключаем конструктор и запускаем
   ui.attachBuild(build);
   ui.attach(action);
@@ -221,7 +277,7 @@ void setup() {
 void smtpCallback(SMTP_Status status){
   /* Print the current status */
   Serial.println(status.info());
-
+  WiFiupd();
   /* Print the sending result */
   if (status.success()){
     // ESP_MAIL_PRINTF used in the examples is for format printing via debug Serial port
@@ -245,7 +301,7 @@ void smtpCallback(SMTP_Status status){
       
       ESP_MAIL_PRINTF("Message No: %d\n", i + 1);
       ESP_MAIL_PRINTF("Status: %s\n", result.completed ? "success" : "failed");
-      ESP_MAIL_PRINTF("Date/Time: %s\n", MailClient.Time.getDateTimeString(result.timestamp, "%B %d, %Y %H:%M:%S").c_str());
+      ESP_MAIL_PRINTF("Date/Time: %s\n", valDate.encodeDMY());
       ESP_MAIL_PRINTF("Recipient: %s\n", result.recipients.c_str());
       ESP_MAIL_PRINTF("Subject: %s\n", result.subject.c_str());
     }
@@ -275,10 +331,6 @@ void WiFiupd(){
     {
       // update the NTP client and get the UNIX UTC timestamp 
       timeClient.update();
-      valTime = GPtime(timeClient.getHours(), timeClient.getMinutes(), timeClient.getSeconds());
-      epochTime = timeClient.getEpochTime();
-      ptm = gmtime((time_t *)&epochTime);
-      valDate = GPdate(ptm -> tm_year + 1900, ptm -> tm_mon + 1, ptm -> tm_mday);
     }
     else //Пробуем подключиться заново
     {
@@ -291,6 +343,10 @@ void WiFiupd(){
         ESP.restart();
       }
     }
+    valTime = GPtime(timeClient.getHours(), timeClient.getMinutes(), timeClient.getSeconds());
+    epochTime = timeClient.getEpochTime();
+    ptm = gmtime((time_t *)&epochTime);
+    valDate = GPdate(ptm -> tm_year + 1900, ptm -> tm_mon + 1, ptm -> tm_mday);
 }
 
 uint32_t createTimespan(uint16_t startTime, uint16_t lengthTime){
@@ -352,6 +408,5 @@ void loop() {
   WiFiupd();
   WriteEeprom();
   delay(50);
-  
   
 }
