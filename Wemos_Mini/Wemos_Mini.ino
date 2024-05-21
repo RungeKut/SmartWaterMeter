@@ -5,7 +5,6 @@
 #include <ESP8266WiFi.h>
 #include <ESP8266mDNS.h>
 #include <WiFiUdp.h>
-#include <ArduinoOTA.h>
 #include <time.h>
 #include <EEPROM.h>
 
@@ -39,6 +38,17 @@ DallasTemperature sensors(&oneWire); // Подключаем бибилотек�
 DeviceAddress temperatureSensors[4];
 DeviceAddress tempSensors[4] = {0x2840263E00000052, 0x2884263E00000011, 0x2874F33D00000067, 0x2825EF3D00000023};
 uint8_t deviceCount = 0;
+
+//Для подключения к БД
+#include <MySQL_Generic.h>
+#include <avr/pgmspace.h>
+char server[] = "database.local";
+uint16_t server_port = 3306;
+char user[] = "my_db_admin";           // MySQL user login username
+char password[] = "password";     // MySQL user login password
+WiFiClient clientt;
+MySQL_Connection conn((Client *)&clientt);
+char PROGMEM query[] = "INSERT INTO climatic_db.water_temperature (data,feeder_hot,feeder_cold,heating_source,heating_drain) VALUES ('2024-04-20 17:20:00','11','12','13','14');";
 
 // Функция вывода адреса датчика 
 void printAddress(DeviceAddress deviceAddress)
@@ -167,51 +177,6 @@ void setup() {
     ESP.restart();
   }
 
-  // Port defaults to 8266
-  ArduinoOTA.setPort(8266);
-
-  // Hostname defaults to esp8266-[ChipID]
-  ArduinoOTA.setHostname("SmartNightLight");
-
-  // No authentication by default
-  // ArduinoOTA.setPassword("admin");
-
-  // Password can be set with it's md5 value as well
-  // MD5(admin) = 21232f297a57a5a743894a0e4a801fc3
-  // ArduinoOTA.setPasswordHash("21232f297a57a5a743894a0e4a801fc3");
-
-  ArduinoOTA.onStart([]() {
-    String type;
-    if (ArduinoOTA.getCommand() == U_FLASH) {
-      type = "sketch";
-    } else {  // U_FS
-      type = "filesystem";
-    }
-
-    // NOTE: if updating FS this would be the place to unmount FS using FS.end()
-    Serial.println("Start updating " + type);
-  });
-  ArduinoOTA.onEnd([]() {
-    Serial.println("\nEnd");
-  });
-  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-    Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
-  });
-  ArduinoOTA.onError([](ota_error_t error) {
-    Serial.printf("Error[%u]: ", error);
-    if (error == OTA_AUTH_ERROR) {
-      Serial.println("Auth Failed");
-    } else if (error == OTA_BEGIN_ERROR) {
-      Serial.println("Begin Failed");
-    } else if (error == OTA_CONNECT_ERROR) {
-      Serial.println("Connect Failed");
-    } else if (error == OTA_RECEIVE_ERROR) {
-      Serial.println("Receive Failed");
-    } else if (error == OTA_END_ERROR) {
-      Serial.println("End Failed");
-    }
-  });
-  ArduinoOTA.begin();
   Serial.println("Ready");
   Serial.print("IP address: ");
   Serial.println(WiFi.localIP());
@@ -271,6 +236,38 @@ void setup() {
   }
 
   SendEmail("Power On", "SmartWaterMeter Olimp is Power On");
+
+  Serial.println("Connecting SQL...");
+  if (conn.connectNonBlocking(server, server_port, user, password) != RESULT_FAIL)
+  {
+    delay(500);
+    runQuery();
+    conn.close();
+    Serial.println("Connection to SQL Complete.");
+  }
+  else
+  {
+    Serial.println("Connection to SQL failed.");
+  }
+}
+
+void runQuery()
+{
+  // Initiate the query class instance
+  MySQL_Query query_mem = MySQL_Query(&conn);
+  
+  // Execute the query with the PROGMEM option
+  // KH, check if valid before fetching
+  if ( !query_mem.execute(query, true) )
+  {
+    Serial.println("Querying error");
+    return;
+  }
+  
+  // Show the results
+  query_mem.show_results();
+  // close the query
+  query_mem.close();
 }
 
 /* Callback function to get the Email sending status */
@@ -403,10 +400,9 @@ uint32_t totalMinutes(uint32_t timespan){
 }
 
 void loop() {
-  ArduinoOTA.handle();
   ui.tick();
   WiFiupd();
   WriteEeprom();
   delay(50);
-  
+
 }
