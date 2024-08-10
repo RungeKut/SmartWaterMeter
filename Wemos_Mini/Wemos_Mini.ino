@@ -237,18 +237,18 @@ void setup() {
 
   SendEmail("Power On", "SmartWaterMeter Olimp is Power On");
 
-  Serial.println("Connecting SQL...");
-  if (conn.connectNonBlocking(server, server_port, user, password) != RESULT_FAIL)
-  {
-    delay(500);
-    runQuery();
-    conn.close();
-    Serial.println("Connection to SQL Complete.");
-  }
-  else
-  {
-    Serial.println("Connection to SQL failed.");
-  }
+  //Serial.println("Connecting SQL...");
+  //if (conn.connectNonBlocking(server, server_port, user, password) != RESULT_FAIL)
+  //{
+  //  delay(500);
+  //  runQuery();
+  //  conn.close();
+  //  Serial.println("Connection to SQL Complete.");
+  //}
+  //else
+  //{
+  //  Serial.println("Connection to SQL failed.");
+  //}
 }
 
 void runQuery()
