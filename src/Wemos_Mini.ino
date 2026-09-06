@@ -226,7 +226,7 @@ void loop() {
   // ---- DS18B20: asynchronous conversion cycle ----
   // Phase 1: start conversion (triggers ~750ms on bus)
   // Phase 2: read results (next loop cycle, ~1s later)
-  uint32_t sensorInterval = tempSensors.isCalibrating() ? 1000 : 5000;
+  uint32_t sensorInterval = tempSensors.isCalibrating() ? 1000 : 1000;
 
   if (!sensorConvPending && now - lastSensorRead > sensorInterval) {
     // Phase 1: start new conversion
@@ -249,6 +249,22 @@ void loop() {
     t["hot"]    = tempSensors.getTempGVS();
     t["return"] = tempSensors.getTempReturn();
     t["supply"] = tempSensors.getTempSupply();
+    // Include bus devices for live calibrate table
+    JsonArray bus = doc.createNestedArray("busDevices");
+    for (uint8_t i = 0; i < tempSensors.getAllAddrCount(); i++) {
+      JsonObject b = bus.createNestedObject();
+      b["index"] = i;
+      b["temp"] = tempSensors.getRawTemp(i);
+      const uint8_t* addr = tempSensors.getAllAddr(i);
+      if (addr) {
+        char addrStr[17];
+        for (int j = 0; j < 8; j++) {
+          sprintf(addrStr + j * 2, "%02X", addr[j]);
+        }
+        addrStr[16] = '\0';
+        b["address"] = addrStr;
+      }
+    }
     wsBroadcastJson(doc);
   }
 
@@ -516,6 +532,16 @@ void sendFullState(AsyncWebSocketClient *client) {
     JsonObject b = bus.createNestedObject();
     b["index"] = i;
     b["temp"] = tempSensors.getRawTemp(i);
+    // Format address as hex string
+    const uint8_t* addr = tempSensors.getAllAddr(i);
+    if (addr) {
+      char addrStr[17];
+      for (int j = 0; j < 8; j++) {
+        sprintf(addrStr + j * 2, "%02X", addr[j]);
+      }
+      addrStr[16] = '\0';
+      b["address"] = addrStr;
+    }
   }
 
   doc["ota_pending"] = failsafe.isPending();

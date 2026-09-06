@@ -25,6 +25,11 @@ body {
   min-height: 100vh;
   padding-bottom: 60px;
 }
+.container {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 0 12px;
+}
 .header {
   background: var(--primary);
   color: #fff;
@@ -175,6 +180,8 @@ label { font-size: 12px; color: var(--text-secondary); display: block; margin-bo
   <div class="tab" data-tab="calibrate">Calibrate</div>
 </div>
 
+<div class="container">
+
 <div id="otaBanner" class="hidden">
   <div class="ota-banner">
     Firmware Update: Confirm within <span class="countdown" id="otaCountdown">--</span>s
@@ -271,9 +278,19 @@ label { font-size: 12px; color: var(--text-secondary); display: block; margin-bo
 <!-- ======== CALIBRATE ======== -->
 <div id="tab-calibrate" class="tab-content">
   <div class="card">
-    <h3>Sensor Calibration</h3>
+    <h3>Bus Sensors</h3>
+    <p style="font-size:13px;color:var(--text-secondary);margin-bottom:8px">
+      All DS18B20 sensors currently on the 1-Wire bus:
+    </p>
+    <div id="busSensorsTable">
+      <div style="font-size:13px;color:var(--text-secondary)">Loading...</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Calibration</h3>
     <p style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">
-      Select a sensor, then heat the physical DS18B20 by touching it (finger warmth).
+      Select a channel, then heat the physical DS18B20 by touching it.
       When the temperature rises by &gt;5&deg;C, its address will be saved.
     </p>
     <div id="calibrateSensors">
@@ -286,6 +303,8 @@ label { font-size: 12px; color: var(--text-secondary); display: block; margin-bo
     <div id="calibrateInfo">Not started</div>
   </div>
 </div>
+
+</div> <!-- /container -->
 
 <div class="toast" id="toast"></div>
 
@@ -340,8 +359,10 @@ function handleMessage(msg) {
     case 'sensors':
       if (state) {
         state.temperatures = msg.temperatures;
+        if (msg.busDevices) state.busDevices = msg.busDevices;
       }
       updateDashboard();
+      updateCalibrateBusTable();
       break;
     case 'saveConfigResult':
       showToast(msg.message || 'Config saved');
@@ -520,6 +541,31 @@ function testEmail() {
 }
 
 // ======== Calibrate ========
+function updateCalibrateBusTable() {
+  const container = document.getElementById('busSensorsTable');
+  if (!state) return;
+  const bus = state.busDevices || [];
+  if (bus.length === 0) {
+    container.innerHTML = '<div style="font-size:13px;color:var(--text-secondary)">No sensors detected on bus</div>';
+    return;
+  }
+  let html = '<table style="width:100%;border-collapse:collapse;font-size:13px">' +
+    '<tr style="border-bottom:1px solid var(--border);color:var(--text-secondary)">' +
+    '<th style="text-align:left;padding:6px 4px">#</th>' +
+    '<th style="text-align:left;padding:6px 4px">Address</th>' +
+    '<th style="text-align:right;padding:6px 4px">Temp</th></tr>';
+  bus.forEach(b => {
+    const addr = b.address || '';
+    const temp = b.temp !== undefined && b.temp > -50 ? b.temp.toFixed(1) + '°C' : 'N/D';
+    html += '<tr style="border-bottom:1px solid var(--border)">' +
+      '<td style="padding:6px 4px">' + b.index + '</td>' +
+      '<td style="padding:6px 4px;font-family:monospace;font-size:12px">' + addr + '</td>' +
+      '<td style="padding:6px 4px;text-align:right;font-weight:600">' + temp + '</td></tr>';
+  });
+  html += '</table>';
+  container.innerHTML = html;
+}
+
 function updateCalibrate() {
   const container = document.getElementById('calibrateSensors');
   if (!state) return;
@@ -527,7 +573,6 @@ function updateCalibrate() {
   const cal = state.calibrating;
   const calIdx = state.calibrate_index;
   const mapping = state.sensorMapping || [];
-  const bus = state.busDevices || [];
 
   let html = '';
   mapping.forEach((s, i) => {
@@ -535,25 +580,12 @@ function updateCalibrate() {
     const found = s.found ? '<span class="badge ok">Found</span>' : '<span class="badge err">Missing</span>';
     const disabled = cal ? 'disabled' : '';
 
-    // Build bus device list with deltas
-    let busHtml = '';
-    if (bus.length > 0) {
-      busHtml = '<div style="margin-top:8px;font-size:11px;color:var(--text-secondary)">';
-      bus.forEach(b => {
-        const btemp = b.temp !== undefined && b.temp > -50 ? b.temp.toFixed(1) + '°C' : 'N/D';
-        busHtml += '<div style="padding:2px 0">Device #' + b.index + ': ' + btemp + '</div>';
-      });
-      busHtml += '</div>';
-    }
-
     html += '<div style="padding:8px 0;border-bottom:1px solid var(--border)">' +
       '<div style="display:flex;justify-content:space-between;align-items:center">' +
       '<div><strong>' + s.name + '</strong> ' + found + '<br><span style="font-size:12px;color:var(--text-secondary)">' + temp + '</span></div>' +
       '<button class="btn btn-primary" style="width:auto;padding:6px 16px" onclick="startCalibration(' + i + ')" ' + disabled + '>' +
       (cal && calIdx === i ? 'Calibrating...' : 'Calibrate') +
-      '</button></div>' +
-      busHtml +
-      '</div>';
+      '</button></div></div>';
   });
 
   container.innerHTML = html;
