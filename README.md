@@ -2,15 +2,18 @@
 
 Умный контроллер учёта воды и тепла на базе ESP8266 (Wemos D1 mini).
 
+Асинхронный веб-интерфейс на ESPAsyncWebServer + WebSocket, SPA-фронтенд из LittleFS, JSON API.
+
 **Возможности:**
-- 4 датчика температуры DS18B20 (ХВС, ГВС, подача, обратка)
-- 2 импульсных счётчика воды (ГВС и ХВС) с прерываниями
-- Веб-интерфейс (GyverPortal) — настройка, калибровка, мониторинг
-- SMTP-отправка показаний по расписанию (email)
+- 4 датчика температуры DS18B20 (ХВС, ГВС, подача, обратка) — асинхронный цикл конверсии
+- 2 импульсных счётчика воды (ГВС и ХВС) с прерываниями по CHANGE и антидребезгом
+- SPA веб-интерфейс (Material Design) через WebSocket — Dashboard + Settings + Calibrate
+- SMTP-отправка показаний по расписанию (email) + тестовая отправка
 - JSON API для Home Assistant / Prometheus
 - Telnet-доступ к логам по WiFi
-- OTA-обновление прошивки по WiFi с автоматическим откатом (A/B слоты)
-- Калибровка датчиков температуры через веб-интерфейс
+- OTA-обновление с A/B слотами и автоматическим откатом
+- Калибровка датчиков температуры через веб-интерфейс (нагрев >5°C)
+- Карта шины OneWire: просмотр всех датчиков на шине с адресами и температурами
 
 ---
 
@@ -44,149 +47,73 @@ Wemos D1 mini
 - Герконы подключаются между пином и GND. Внутренняя подтяжка INPUT_PULLUP включена программно.
 - Если счётчик воды имеет встроенный геркон (обычно 2 провода), подключайте один провод к пину, второй к GND.
 
-## Настройка окружения для разработки
+## Быстрый старт
 
 ### 1. Установка PlatformIO
 
 ```bash
-# Установка Python (скачайте с https://www.python.org/downloads/ версия 3.10+)
-
-# Установка PlatformIO
 pip install platformio
-
-# Проверка
 pio --version
 ```
 
-### 2. Клонирование репозитория
+### 2. Настройка secrets.h
 
-```bash
-git clone <url-репозитория>
-cd SmartWaterMeter
-```
-
-### 3. Настройка secrets.h
-
-Скопируйте и отредактируйте файл конфигурации:
+Скопируйте `src/secrets.h.example` в `src/secrets.h` и отредактируйте:
 
 ```bash
 cp src/secrets.h.example src/secrets.h
-# Отредактируйте src/secrets.h под свои датчики
 ```
 
 В secrets.h нужно указать:
-- **AP_SSID_PREFIX** — префикс имени точки доступа (добавляется 3 байта MAC)
-- **PIN_METER_HOT / PIN_METER_COLD** — пины герконов
-- **ONE_WIRE_BUS** — пин датчиков DS18B20
-- **SENSOR_ADDR** — адреса ваших датчиков DS18B20 (узнать: см. раздел Отладка)
+- **AP_SSID_PREFIX** — префикс имени точки доступа
+- **PIN_METER_HOT / PIN_METER_COLD** — пины герконов (D5=14, D6=12)
+- **ONE_WIRE_BUS** — пин датчиков DS18B20 (D3=0)
+- **SENSOR_ADDR[4]** — адреса датчиков DS18B20 (можно оставить заглушки и откалибровать через веб)
 
-### 4. Сборка без интернета
-
-Все необходимые библиотеки включены в репозиторий (lib/). Для сборки нужен только PlatformIO:
+### 3. Сборка и прошивка
 
 ```bash
-pio run
-```
-
-Для сборки с интернетом PlatformIO сам скачает зависимости из lib_deps.
-
-### 5. Сборка и заливка
-
-```bash
-# Просто сборка
-pio run
-
-# Заливка через USB (первый раз)
+# Первая прошивка (прошивка + файловая система)
 pio run --target upload --upload-port COM3
-
-# Заливка через WiFi (OTA)
-pio run --target upload --upload-port 192.168.x.x
+pio run --target uploadfs --upload-port COM3
 ```
 
-## Первоначальная настройка
+### 4. Первоначальная настройка WiFi
 
-### 1. Подключение к устройству
+1. Подключитесь к точке доступа `SmartWaterMeter-XXXXXX` (пароля нет)
+2. Откройте http://192.168.4.1 в браузере
+3. Перейдите на вкладку **Settings**, введите SSID и пароль вашей WiFi
+4. Нажмите **Save & Reboot**
 
-После первой загрузки устройство создаёт точку доступа:
-- **SSID:** SmartWaterMeter-XXXXXX (где XXXXXX — 3 байта MAC)
-- **Пароль:** пустой (открытая сеть)
-- **IP:** 192.168.4.1
-
-Подключитесь к этой сети и откройте в браузере http://192.168.4.1.
-
-### 2. Настройка WiFi
-
-1. Перейдите в **Settings**
-2. Введите SSID и пароль вашей WiFi-сети
-3. Нажмите **Save and Reboot**
-4. После перезагрузки устройство подключится к вашей сети
-5. Узнайте IP в роутере или через Telnet
-
-### 3. Настройка SMTP (email-отчёты)
-
-В разделе **Settings**:
-- **SMTP Host:** например, smtp.yandex.ru
-- **Port:** 465
-- **Sender Email:** ваш email
-- **SMTP Password:** пароль приложения (для Яндекса — пароль приложения)
-- **Recipient Email:** email для получения показаний
-
-### 4. Настройка расписания отчётов
-
-- **Time (HH:MM):** время отправки
-- **Repeat:** Daily / Weekly / Monthly
-- **Day:** день недели (для Weekly) или число месяца (для Monthly)
-
-### 5. Настройка счётчиков воды
-
-- **Hot m3 / Cold m3:** текущие показания счётчиков
-- **cube/pulse:** сколько кубометров на один импульс (обычно 0.001 для 1 литр/импульс)
+После перезагрузки устройство подключится к вашей сети. IP можно узнать через Telnet или в роутере.
 
 ## Веб-интерфейс
 
-Устройство работает на HTTP (порт 80). Открывайте в браузере http://<IP-адрес>/.
+Открывайте в браузере http://<IP-устройства>/. SPA на Vanilla JS с Material Design.
 
-### Главная страница (/)
+### Dashboard
+- Температуры: Cold, Hot, Supply, Return (обновление каждую секунду)
+- Показания счётчиков воды (ГВС / ХВС в м³)
+- Системная информация: WiFi, RSSI, IP, uptime, свободная память
 
-- **Date and Time** — текущее время (NTP или uptime если NTP недоступен)
-- **Water Supply** — показания ГВС и ХВС (м3) и температуры
-- **Heating** — температуры подачи и обратки
-- **Status** — статус WiFi, IP-адрес
-- **Controls** — ссылки на Settings, Calibrate, Restart
-
-Страница обновляется автоматически каждые 5 секунд.
-
-### Настройки (/settings)
-
+### Settings
 - **WiFi** — SSID и пароль
-- **Email (SMTP)** — настройки почтового сервера
-- **Report Schedule** — расписание отправки показаний
-- **Meter Readings** — показания счётчиков и коэффициенты
+- **SMTP** — хост, порт (465), email отправителя, пароль приложения, получатель
+- **Расписание отчётов** — время (HH:MM), ежедневно / еженедельно / ежемесячно
+- **Счётчики** — текущие показания и литров на импульс
 - **Test Email** — отправка тестового письма
-- **Save and Reboot** — сохранить и перезагрузить
+- **Save & Reboot / Restart**
 
-### Калибровка датчиков (/calibrate)
+### Calibrate
+- **Bus Sensors** — таблица всех датчиков DS18B20 на шине OneWire: номер, адрес (hex), температура, дельта (при калибровке). Обновляется каждую секунду.
+- **Calibration** — сопоставление логических каналов (Cold, Hot, Return, Supply) с физическими датчиками. Выберите канал, нагрейте датчик >5°C — адрес сохранится в EEPROM.
 
-Позволяет сопоставить физические датчики DS18B20 с логическими каналами (ХВС, ГВС, подача, обратка).
+## JSON API
 
-**Процесс калибровки:**
-1. На странице отображаются все найденные датчики на шине OneWire
-2. Нажмите на датчик, который хотите откалибровать (например, "ХВС")
-3. Нагрейте этот датчик (например, зажав в пальцах)
-4. Когда температура поднимется на +5C — калибровка завершится
-5. Адрес датчика сохраняется в EEPROM
-
-## JSON API и Prometheus
-
-### JSON API (/api.json)
-
-Для Home Assistant и других систем умного дома:
-
-```bash
-curl http://192.168.88.89/api.json
+```
+GET http://<ip>/api.json
 ```
 
-Ответ:
 ```json
 {
   "device": "SmartWaterMeter-93C195",
@@ -206,7 +133,7 @@ curl http://192.168.88.89/api.json
 }
 ```
 
-**Пример для Home Assistant (RESTful sensor):**
+### Home Assistant (RESTful sensor)
 
 ```yaml
 sensor:
@@ -215,104 +142,37 @@ sensor:
     resource: http://192.168.88.89/api.json
     value_template: "{{ value_json.meters.hot_m3 }}"
     unit_of_measurement: "m3"
-
   - platform: rest
     name: "Water Temperature Hot"
     resource: http://192.168.88.89/api.json
     value_template: "{{ value_json.temperatures.hot }}"
-    unit_of_measurement: "C"
+    unit_of_measurement: "°C"
 ```
-
-### Prometheus (/metrics)
-
-```bash
-curl http://192.168.88.89/metrics
-```
-
-Ответ:
-```
-# HELP smartwatermeter_temperature Temperature sensors
-# TYPE smartwatermeter_temperature gauge
-smartwatermeter_temperature{sensor="cold"} 22.5
-smartwatermeter_temperature{sensor="hot"} 55.3
-smartwatermeter_temperature{sensor="supply"} 60.1
-smartwatermeter_temperature{sensor="return"} 45.2
-# HELP smartwatermeter_meter Water meter readings in m3
-# TYPE smartwatermeter_meter gauge
-smartwatermeter_meter{type="hot"} 103.000
-smartwatermeter_meter{type="cold"} 127.000
-# HELP smartwatermeter_uptime_seconds System uptime
-# TYPE smartwatermeter_uptime_seconds counter
-smartwatermeter_uptime_seconds 12345
-# HELP smartwatermeter_free_heap_bytes Free heap memory
-# TYPE smartwatermeter_free_heap_bytes gauge
-smartwatermeter_free_heap_bytes 21704
-# HELP smartwatermeter_wifi_rssi WiFi signal strength
-# TYPE smartwatermeter_wifi_rssi gauge
-smartwatermeter_wifi_rssi -65
-# HELP smartwatermeter_calibrating Whether calibration is in progress
-# TYPE smartwatermeter_calibrating gauge
-smartwatermeter_calibrating 0
-```
-
-**Пример конфигурации Prometheus:**
-
-```yaml
-scrape_configs:
-  - job_name: 'smartwatermeter'
-    static_configs:
-      - targets: ['192.168.88.89']
-    metrics_path: /metrics
-```
-
-## Telnet-доступ
-
-Подключитесь к устройству через Telnet для просмотра логов в реальном времени:
-
-```bash
-telnet 192.168.88.89
-```
-
-**Доступные команды:**
-- help — список команд
-- status — статус устройства (WiFi, IP, uptime, heap)
-- reset — перезагрузка устройства
-- heap — свободная память
-- uptime — время работы
-- confirm — подтверждение новой прошивки (после OTA)
-
-**Примечание:** Все логи, которые выводятся в Serial (USB), автоматически дублируются в Telnet.
 
 ## OTA-обновление
 
-### Как это работает
+Прошивка с A/B слотами (каждый по 1MB) — автоматический откат при сбое.
 
-1. Прошивка загружается в неактивный слот флеш-памяти (A/B схема)
-2. Устройство перезагружается в новый слот
-3. На веб-интерфейсе появляется предупреждение:
-   Firmware Update — "New firmware detected! Auto-rollback in 300 seconds"
-4. Нажмите Confirm в течение 5 минут
-5. Если не нажать — устройство автоматически вернётся к предыдущей версии
+```bash
+# OTA-прошивка
+pio run --target upload --upload-port 192.168.x.x
 
-### Принудительный откат
+# Предварительно раскомментировать в platformio.ini:
+# upload_protocol = espota
+# upload_port = 192.168.x.x
+```
 
-Если прошивка вызывает циклическую перезагрузку:
-- После 3 неудачных загрузок подряд происходит автоматический откат
-- Можно также перепрошить через USB
+После OTA на веб-интерфейсе появляется предупреждение. Нажмите **Confirm** в течение 5 минут, иначе автоматический откат.
 
-### Подтверждение через Telnet
-
+Подтверждение через Telnet:
 ```
 telnet 192.168.88.89
 > confirm
-Firmware confirmed!
 ```
 
 ## Отладка
 
-### USB-Serial (всегда доступен)
-
-Подключите USB-кабель и откройте монитор порта:
+### USB-Serial
 
 ```bash
 pio device monitor --port COM3 --baud 115200
@@ -320,71 +180,74 @@ pio device monitor --port COM3 --baud 115200
 
 ### Telnet (по WiFi)
 
-После подключения к WiFi можно смотреть логи удалённо:
-
 ```bash
 telnet 192.168.88.89
 ```
 
-### Определение адресов DS18B20
-
-Для определения адресов датчиков на шине OneWire используйте пример из библиотеки DallasTemperature:
-
-```cpp
-#include <OneWire.h>
-#include <DallasTemperature.h>
-
-OneWire oneWire(D3);
-DallasTemperature sensors(&oneWire);
-
-void setup() {
-  Serial.begin(115200);
-  sensors.begin();
-  DeviceAddress addr;
-  for (int i = 0; i < sensors.getDeviceCount(); i++) {
-    sensors.getAddress(addr, i);
-    for (int j = 0; j < 8; j++) {
-      Serial.print("0x");
-      if (addr[j] < 16) Serial.print("0");
-      Serial.print(addr[j], HEX);
-      if (j < 7) Serial.print(", ");
-    }
-    Serial.println();
-  }
-}
-
-void loop() {}
-```
-
-Полученные адреса запишите в secrets.h в массив SENSOR_ADDR.
+Команды: `help`, `status`, `reset`, `heap`, `uptime`, `confirm`.
 
 ## Структура проекта
 
 ```
 SmartWaterMeter/
-  platformio.ini         # Конфигурация сборки
-  upload_script.py       # Скрипт двойной заливки (A/B слоты)
+  platformio.ini              # Конфигурация сборки (ESPAsyncWebServer, LittleFS, A/B)
+  upload_script.py            # Двойная заливка A/B слотов при USB-прошивке
+  data/
+    index.html                # SPA-фронтенд (Vanilla JS, WebSocket)
   src/
-    Wemos_Mini.ino       # Главный скетч (setup, loop, WiFi, веб-интерфейс)
-    secrets.h            # Конфиденциальные настройки (пины, адреса)
-    secrets.h.example    # Пример конфигурации
-    ConfigStore.h        # EEPROM: сохранение/загрузка настроек
-    MeterCounter.h       # Импульсные счётчики (прерывания, CHANGE)
-    TemperatureSensors.h # DS18B20: чтение, калибровка
-    StatusLED.h          # Светодиодная индикация
-    TelnetSerial.h       # Логи по WiFi (TCP:23)
-    FailsafeOTA.h        # Безопасное OTA с откатом
-  lib/                   # Библиотеки для офлайн-сборки
-    GyverPortal/
-    OneWire/
-    DallasTemperature/
-    ESP_Mail_Client/
-    NTPClient/
-    ESP8266WiFi/
-    ESP8266WebServer/
-    ESP8266mDNS/
-    ArduinoOTA/
+    Wemos_Mini.ino            # Главный скетч (setup, loop, WebSocket, HTTP)
+    secrets.h                 # Пароли WiFi/SMTP, адреса датчиков (в .gitignore)
+    secrets.h.example         # Пример конфигурации
+    ConfigStore.h             # EEPROM: сохранение/загрузка конфига
+    MeterCounter.h            # Импульсные счётчики (прерывания CHANGE + debounce)
+    TemperatureSensors.h      # DS18B20: асинхронный цикл, калибровка, карта шины
+    StatusLED.h               # Светодиодная индикация (WiFi, ошибки датчиков)
+    TelnetSerial.h            # Логи по WiFi (TCP:23)
+    FailsafeOTA.h             # Безопасное OTA с A/B слотами и откатом
+  .gitignore
   LICENSE
   README.md
 ```
 
+## Сборка
+
+```bash
+# Просто сборка
+pio run
+
+# Прошивка через USB
+pio run --target upload --upload-port COM3
+
+# Заливка файловой системы (LittleFS)
+pio run --target uploadfs --upload-port COM3
+
+# OTA
+pio run --target upload --upload-port 192.168.88.87
+
+# Монитор
+pio device monitor --port COM3 --baud 115200
+```
+
+### Важно
+
+- После изменения `data/index.html` нужно перезаливать файловую систему: `pio run --target uploadfs`
+- После первого USB-клннекта `upload_script.py` автоматически заливает прошивку в оба слота (A/B)
+- Используйте **Ctrl+F5** в браузере для сброса кэша после обновления LittleFS
+
+## Зависимости
+
+Управляются через `lib_deps` в platformio.ini (скачиваются автоматически):
+
+- `paulstoffregen/OneWire` — шина OneWire
+- `milesburton/DallasTemperature` — датчики DS18B20
+- `me-no-dev/ESPAsyncTCP` — асинхронный TCP
+- `me-no-dev/ESPAsyncWebServer` — асинхронный веб-сервер + WebSocket
+- `bblanchon/ArduinoJson` — JSON
+- `NTPClient` — NTP-время
+- `ESP_Mail_Client` — SMTP-клиент
+
+Libraries removed (old architecture): GyverPortal, Arduino_ESP32_OTA, ArduinoOTA.
+
+## Лицензия
+
+MIT

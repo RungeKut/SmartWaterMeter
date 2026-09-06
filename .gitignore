@@ -8,6 +8,16 @@ lib/ArduinoJson/
 lib/ESPAsyncTCP/
 lib/ESPAsyncWebServer/
 
+# Removed old architecture libs (not managed by PIO)
+lib/GyverPortal/
+lib/Arduino_ESP32_OTA/
+lib/ArduinoOTA/
+
+# Duplicate library directory (not used)
+libraries/
+
+# System libraries copied from SDK
+
 # IDE
 .vscode/
 .idea/
