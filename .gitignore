@@ -3,6 +3,11 @@
 .pioenvs/
 .piolibdeps/
 
+# Libraries downloaded by PIO into lib/ (managed via lib_deps)
+lib/ArduinoJson/
+lib/ESPAsyncTCP/
+lib/ESPAsyncWebServer/
+
 # IDE
 .vscode/
 .idea/

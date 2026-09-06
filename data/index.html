@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SmartWaterMeter</title>
+<style>
+:root {
+  --primary: #1976D2;
+  --primary-dark: #1565C0;
+  --bg: #f5f5f5;
+  --card: #fff;
+  --text: #212121;
+  --text-secondary: #757575;
+  --border: #e0e0e0;
+  --green: #43A047;
+  --red: #E53935;
+  --orange: #FB8C00;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  padding-bottom: 60px;
+}
+.header {
+  background: var(--primary);
+  color: #fff;
+  padding: 16px;
+  text-align: center;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  box-shadow: 0 2px 8px rgba(0,0,0,.15);
+}
+.header h1 { font-size: 18px; font-weight: 500; }
+.header .sub { font-size: 12px; opacity: .8; }
+.tabs {
+  display: flex;
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 56px;
+  z-index: 99;
+}
+.tab {
+  flex: 1;
+  text-align: center;
+  padding: 12px 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all .2s;
+  -webkit-tap-highlight-color: transparent;
+}
+.tab.active { color: var(--primary); border-bottom-color: var(--primary); }
+.tab-content { display: none; padding: 12px; }
+.tab-content.active { display: block; }
+.card {
+  background: var(--card);
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(0,0,0,.08);
+  padding: 16px;
+  margin-bottom: 12px;
+}
+.card h3 { font-size: 13px; color: var(--text-secondary); margin-bottom: 8px; font-weight: 500; }
+.row { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; }
+.row .label { font-size: 14px; color: var(--text-secondary); }
+.row .value { font-size: 16px; font-weight: 600; }
+.temp-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.temp-item {
+  background: var(--bg);
+  border-radius: 8px;
+  padding: 12px;
+  text-align: center;
+}
+.temp-item .temp-value { font-size: 24px; font-weight: 700; }
+.temp-item .temp-label { font-size: 11px; color: var(--text-secondary); margin-top: 4px; }
+.temp-item.nd .temp-value { color: var(--text-secondary); }
+.meter-val { font-size: 28px; font-weight: 700; color: var(--primary); }
+.meter-label { font-size: 11px; color: var(--text-secondary); }
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 500;
+}
+.badge.ok { background: #E8F5E9; color: var(--green); }
+.badge.err { background: #FFEBEE; color: var(--red); }
+.badge.warn { background: #FFF3E0; color: var(--orange); }
+input, select { width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; margin-bottom: 8px; background: #fff; }
+input:focus { outline: none; border-color: var(--primary); }
+label { font-size: 12px; color: var(--text-secondary); display: block; margin-bottom: 2px; }
+.btn {
+  display: inline-block;
+  padding: 10px 20px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  border: none;
+  cursor: pointer;
+  transition: opacity .2s;
+  margin: 4px 0;
+  width: 100%;
+  text-align: center;
+  -webkit-tap-highlight-color: transparent;
+}
+.btn:active { opacity: .7; }
+.btn-primary { background: var(--primary); color: #fff; }
+.btn-danger { background: var(--red); color: #fff; }
+.btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
+.btn-success { background: var(--green); color: #fff; }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.hidden { display: none !important; }
+.toast {
+  position: fixed;
+  bottom: 80px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #323232;
+  color: #fff;
+  padding: 12px 24px;
+  border-radius: 8px;
+  font-size: 14px;
+  z-index: 999;
+  opacity: 0;
+  transition: opacity .3s;
+  pointer-events: none;
+  white-space: nowrap;
+}
+.toast.show { opacity: 1; }
+.ota-banner {
+  background: #FFF3E0;
+  border: 1px solid var(--orange);
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 12px;
+  text-align: center;
+  font-size: 13px;
+}
+.ota-banner .countdown { font-weight: 700; color: var(--orange); }
+.section-title { font-size: 12px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .5px; margin: 16px 0 8px; }
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #121212;
+    --card: #1e1e1e;
+    --text: #e0e0e0;
+    --text-secondary: #9e9e9e;
+    --border: #333;
+  }
+  .temp-item { background: #2a2a2a; }
+  input, select { background: #2a2a2a; color: #e0e0e0; }
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>SmartWaterMeter</h1>
+  <div class="sub" id="headerSub">Connecting...</div>
+</div>
+
+<div class="tabs">
+  <div class="tab active" data-tab="dashboard">Dashboard</div>
+  <div class="tab" data-tab="settings">Settings</div>
+  <div class="tab" data-tab="calibrate">Calibrate</div>
+</div>
+
+<div id="otaBanner" class="hidden">
+  <div class="ota-banner">
+    Firmware Update: Confirm within <span class="countdown" id="otaCountdown">--</span>s
+    <br><button class="btn btn-success" onclick="confirmOta()" style="width:auto;padding:6px 24px;margin-top:8px">Confirm</button>
+  </div>
+</div>
+
+<!-- ======== DASHBOARD ======== -->
+<div id="tab-dashboard" class="tab-content active">
+
+  <div class="card">
+    <h3>Temperatures</h3>
+    <div class="temp-grid" id="tempGrid">
+      <div class="temp-item nd"><div class="temp-value">--</div><div class="temp-label">Cold</div></div>
+      <div class="temp-item nd"><div class="temp-value">--</div><div class="temp-label">Hot</div></div>
+      <div class="temp-item nd"><div class="temp-value">--</div><div class="temp-label">Supply</div></div>
+      <div class="temp-item nd"><div class="temp-value">--</div><div class="temp-label">Return</div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Water Meters</h3>
+    <div style="display:flex;gap:16px;text-align:center">
+      <div style="flex:1"><div class="meter-val" id="meterHot">--</div><div class="meter-label">Hot m&sup3;</div></div>
+      <div style="flex:1"><div class="meter-val" id="meterCold">--</div><div class="meter-label">Cold m&sup3;</div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>System</h3>
+    <div class="row"><span class="label">WiFi</span><span id="sysWiFi">--</span></div>
+    <div class="row"><span class="label">RSSI</span><span id="sysRSSI">-- dBm</span></div>
+    <div class="row"><span class="label">IP</span><span id="sysIP">--</span></div>
+    <div class="row"><span class="label">Time</span><span id="sysTime">--</span></div>
+    <div class="row"><span class="label">Uptime</span><span id="sysUptime">--</span></div>
+    <div class="row"><span class="label">Heap</span><span id="sysHeap">--</span></div>
+  </div>
+</div>
+
+<!-- ======== SETTINGS ======== -->
+<div id="tab-settings" class="tab-content">
+  <div class="section-title">WiFi</div>
+  <div class="card">
+    <label>SSID</label><input id="cfgSSID" placeholder="WiFi SSID">
+    <label>Password</label><input id="cfgPass" type="password" placeholder="WiFi password">
+  </div>
+
+  <div class="section-title">SMTP (Email)</div>
+  <div class="card">
+    <label>SMTP Host</label><input id="cfgSmtpHost" placeholder="smtp.yandex.ru">
+    <label>Port</label><input id="cfgSmtpPort" type="number" placeholder="465">
+    <label>Sender Email</label><input id="cfgSmtpEmail" type="email" placeholder="your@email.com">
+    <label>Password</label><input id="cfgSmtpPass" type="password" placeholder="SMTP password">
+    <label>Recipient Email</label><input id="cfgSmtpRecipient" type="email" placeholder="recipient@email.com">
+    <button class="btn btn-outline" onclick="testEmail()">Test Email</button>
+  </div>
+
+  <div class="section-title">Report Schedule</div>
+  <div class="card">
+    <label>Time (HH:MM)</label>
+    <div style="display:flex;gap:8px">
+      <input id="cfgReportHour" type="number" min="0" max="23" placeholder="09" style="flex:1">
+      <input id="cfgReportMin" type="number" min="0" max="59" placeholder="00" style="flex:1">
+    </div>
+    <label>Repeat</label>
+    <select id="cfgReportSchedule">
+      <option value="0">Daily</option>
+      <option value="1">Weekly</option>
+      <option value="2">Monthly</option>
+    </select>
+    <label id="cfgDayLabel">Day of week</label>
+    <select id="cfgReportDay">
+      <option value="0">Sunday</option><option value="1">Monday</option>
+      <option value="2">Tuesday</option><option value="3">Wednesday</option>
+      <option value="4">Thursday</option><option value="5">Friday</option>
+      <option value="6">Saturday</option>
+    </select>
+  </div>
+
+  <div class="section-title">Meter Settings</div>
+  <div class="card">
+    <label>Hot m&sup3;</label><input id="cfgMeterHot" type="number" step="0.001" placeholder="0.000">
+    <label>Cold m&sup3;</label><input id="cfgMeterCold" type="number" step="0.001" placeholder="0.000">
+    <label>L per pulse (Hot)</label><input id="cfgLPH" type="number" step="0.1" placeholder="1.0">
+    <label>L per pulse (Cold)</label><input id="cfgLPC" type="number" step="0.1" placeholder="1.0">
+  </div>
+
+  <div style="display:flex;gap:8px;margin-top:12px">
+    <button class="btn btn-primary" onclick="saveConfig()" style="flex:1">Save & Reboot</button>
+    <button class="btn btn-danger" onclick="restartDevice()" style="flex:1">Restart</button>
+  </div>
+</div>
+
+<!-- ======== CALIBRATE ======== -->
+<div id="tab-calibrate" class="tab-content">
+  <div class="card">
+    <h3>Sensor Calibration</h3>
+    <p style="font-size:13px;color:var(--text-secondary);margin-bottom:12px">
+      Select a sensor, then heat the physical DS18B20 by touching it (finger warmth).
+      When the temperature rises by &gt;5&deg;C, its address will be saved.
+    </p>
+    <div id="calibrateSensors">
+      <p style="font-size:13px;color:var(--text-secondary)">Loading...</p>
+    </div>
+  </div>
+
+  <div class="card" id="calibrateStatus" style="display:none">
+    <h3>Status</h3>
+    <div id="calibrateInfo">Not started</div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ======== WebSocket ========
+let ws = null;
+let state = null;
+let reconnectTimer = null;
+
+function connectWS() {
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+  
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(proto + '//' + location.host + '/ws');
+  
+  ws.onopen = () => {
+    console.log('[WS] Connected');
+    document.getElementById('headerSub').textContent = 'Connected';
+    ws.send(JSON.stringify({type: 'getFullState'}));
+  };
+  
+  ws.onclose = () => {
+    console.log('[WS] Disconnected');
+    document.getElementById('headerSub').textContent = 'Reconnecting...';
+    ws = null;
+    if (!reconnectTimer) {
+      reconnectTimer = setTimeout(() => { reconnectTimer = null; connectWS(); }, 3000);
+    }
+  };
+  
+  ws.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      handleMessage(msg);
+    } catch(err) {
+      console.error('[WS] Parse error:', err);
+    }
+  };
+  
+  ws.onerror = () => {};
+}
+
+function handleMessage(msg) {
+  switch(msg.type) {
+    case 'fullState':
+      state = msg;
+      updateDashboard();
+      updateSettings();
+      updateCalibrate();
+      updateOTABanner();
+      break;
+    case 'sensors':
+      if (state) {
+        state.temperatures = msg.temperatures;
+      }
+      updateDashboard();
+      break;
+    case 'saveConfigResult':
+      showToast(msg.message || 'Config saved');
+      break;
+    case 'testEmailResult':
+      showToast('Test email ' + (msg.success ? 'sent' : 'failed'));
+      break;
+    case 'calibrationStarted':
+      updateCalibrate();
+      showToast('Calibration started. Heat the sensor...');
+      break;
+    case 'calibrationResult':
+      if (state) state.calibrating = false;
+      updateCalibrate();
+      if (msg.success) {
+        showToast('Calibration successful!');
+        ws.send(JSON.stringify({type: 'getFullState'}));
+      } else {
+        showToast('Calibration failed / timeout');
+      }
+      break;
+    case 'calibrationCancelled':
+      if (state) state.calibrating = false;
+      updateCalibrate();
+      showToast('Calibration cancelled');
+      break;
+    case 'confirmOtaResult':
+      showToast('Firmware confirmed!');
+      updateOTABanner();
+      break;
+  }
+}
+
+// ======== Dashboard ========
+function updateDashboard() {
+  if (!state) return;
+
+  // Temps
+  const t = state.temperatures || {};
+  const names = ['cold','hot','supply','return'];
+  const labels = ['Cold','Hot','Supply','Return'];
+  
+  names.forEach((key, i) => {
+    const el = document.querySelectorAll('#tempGrid .temp-item')[i];
+    if (!el) return;
+    const valEl = el.querySelector('.temp-value');
+    const val = t[key];
+    if (val === undefined || val === null || val < -50) {
+      valEl.textContent = 'N/D';
+      el.classList.add('nd');
+    } else {
+      valEl.textContent = val.toFixed(1) + '°';
+      el.classList.remove('nd');
+    }
+  });
+
+  // Meters
+  const m = state.meters || {};
+  document.getElementById('meterHot').textContent = m.hot_m3 !== undefined ? m.hot_m3.toFixed(3) : '--';
+  document.getElementById('meterCold').textContent = m.cold_m3 !== undefined ? m.cold_m3.toFixed(3) : '--';
+
+  // System
+  const connected = state.wifi === 'connected';
+  document.getElementById('sysWiFi').innerHTML = connected
+    ? '<span class="badge ok">Connected</span>'
+    : '<span class="badge err">' + (state.ap_mode ? 'AP mode' : 'Disconnected') + '</span>';
+  
+  document.getElementById('sysRSSI').textContent = state.wifi_rssi + ' dBm';
+  document.getElementById('sysIP').textContent = connected ? state.ap_ssid : '192.168.4.1';
+
+  if (state.time_valid && state.time_hour !== undefined) {
+    const h = String(state.time_hour).padStart(2,'0');
+    const m = String(state.time_min).padStart(2,'0');
+    const s = String(state.time_sec).padStart(2,'0');
+    const d = state.time_mday + '.' + state.time_mon + '.' + state.time_year;
+    document.getElementById('sysTime').textContent = d + ' ' + h + ':' + m + ':' + s;
+  } else {
+    document.getElementById('sysTime').textContent = 'NTP sync...';
+  }
+
+  const upt = state.uptime_sec || 0;
+  document.getElementById('sysUptime').textContent = formatUptime(upt);
+  document.getElementById('sysHeap').textContent = state.free_heap + ' B';
+}
+
+function formatUptime(sec) {
+  const d = Math.floor(sec / 86400);
+  const h = Math.floor((sec % 86400) / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  let r = '';
+  if (d > 0) r += d + 'd ';
+  r += String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+  return r;
+}
+
+// ======== Settings ========
+function updateSettings() {
+  if (!state || !state.config) return;
+  const cfg = state.config;
+  document.getElementById('cfgSSID').value = cfg.wifiSSID || '';
+  document.getElementById('cfgSmtpHost').value = cfg.smtpHost || '';
+  document.getElementById('cfgSmtpPort').value = cfg.smtpPort || 465;
+  document.getElementById('cfgSmtpEmail').value = cfg.smtpEmail || '';
+  document.getElementById('cfgSmtpRecipient').value = cfg.smtpRecipient || '';
+  document.getElementById('cfgReportHour').value = cfg.reportHour !== undefined ? cfg.reportHour : 9;
+  document.getElementById('cfgReportMin').value = cfg.reportMinute !== undefined ? cfg.reportMinute : 0;
+  document.getElementById('cfgReportSchedule').value = cfg.reportSchedule !== undefined ? cfg.reportSchedule : 0;
+  
+  // Day field
+  const sched = parseInt(document.getElementById('cfgReportSchedule').value);
+  document.getElementById('cfgDayLabel').textContent = sched === 1 ? 'Day of week' : 'Day of month';
+  document.getElementById('cfgReportDay').value = cfg.reportDay !== undefined ? cfg.reportDay : 0;
+
+  document.getElementById('cfgMeterHot').value = cfg.meterHotM3 !== undefined ? cfg.meterHotM3 : '';
+  document.getElementById('cfgMeterCold').value = cfg.meterColdM3 !== undefined ? cfg.meterColdM3 : '';
+  document.getElementById('cfgLPH').value = cfg.litersPerPulseHot !== undefined ? cfg.litersPerPulseHot : 1.0;
+  document.getElementById('cfgLPC').value = cfg.litersPerPulseCold !== undefined ? cfg.litersPerPulseCold : 1.0;
+}
+
+document.getElementById('cfgReportSchedule').addEventListener('change', function() {
+  const label = document.getElementById('cfgDayLabel');
+  label.textContent = this.value === '1' ? 'Day of week' : 'Day of month';
+  const sel = document.getElementById('cfgReportDay');
+  if (this.value === '2') {
+    sel.innerHTML = '';
+    for (let i = 1; i <= 28; i++) {
+      sel.innerHTML += '<option value="' + i + '">' + i + '</option>';
+    }
+  } else {
+    sel.innerHTML = `
+      <option value="0">Sunday</option><option value="1">Monday</option>
+      <option value="2">Tuesday</option><option value="3">Wednesday</option>
+      <option value="4">Thursday</option><option value="5">Friday</option>
+      <option value="6">Saturday</option>`;
+  }
+});
+
+function getConfig() {
+  return {
+    wifiSSID: document.getElementById('cfgSSID').value,
+    wifiPass: document.getElementById('cfgPass').value,
+    smtpHost: document.getElementById('cfgSmtpHost').value,
+    smtpPort: parseInt(document.getElementById('cfgSmtpPort').value) || 465,
+    smtpEmail: document.getElementById('cfgSmtpEmail').value,
+    smtpPass: document.getElementById('cfgSmtpPass').value,
+    smtpRecipient: document.getElementById('cfgSmtpRecipient').value,
+    reportHour: parseInt(document.getElementById('cfgReportHour').value) || 9,
+    reportMinute: parseInt(document.getElementById('cfgReportMin').value) || 0,
+    reportSchedule: parseInt(document.getElementById('cfgReportSchedule').value) || 0,
+    reportDay: parseInt(document.getElementById('cfgReportDay').value) || 0,
+    meterHotM3: parseFloat(document.getElementById('cfgMeterHot').value) || 0,
+    meterColdM3: parseFloat(document.getElementById('cfgMeterCold').value) || 0,
+    litersPerPulseHot: parseFloat(document.getElementById('cfgLPH').value) || 1.0,
+    litersPerPulseCold: parseFloat(document.getElementById('cfgLPC').value) || 1.0,
+  };
+}
+
+function saveConfig() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) { showToast('Not connected'); return; }
+  ws.send(JSON.stringify({type: 'saveConfig', config: getConfig()}));
+  showToast('Saving config...');
+}
+
+function restartDevice() {
+  if (!confirm('Restart device?')) return;
+  if (!ws || ws.readyState !== WebSocket.OPEN) { showToast('Not connected'); return; }
+  ws.send(JSON.stringify({type: 'restart'}));
+  showToast('Restarting...');
+}
+
+function testEmail() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) { showToast('Not connected'); return; }
+  ws.send(JSON.stringify({type: 'testEmail'}));
+  showToast('Sending test email...');
+}
+
+// ======== Calibrate ========
+function updateCalibrate() {
+  const container = document.getElementById('calibrateSensors');
+  if (!state) return;
+
+  const cal = state.calibrating;
+  const calIdx = state.calibrate_index;
+  const mapping = state.sensorMapping || [];
+  const bus = state.busDevices || [];
+
+  let html = '';
+  mapping.forEach((s, i) => {
+    const temp = s.temp !== undefined && s.temp > -50 ? s.temp.toFixed(1) + '°C' : 'N/D';
+    const found = s.found ? '<span class="badge ok">Found</span>' : '<span class="badge err">Missing</span>';
+    const disabled = cal ? 'disabled' : '';
+
+    // Build bus device list with deltas
+    let busHtml = '';
+    if (bus.length > 0) {
+      busHtml = '<div style="margin-top:8px;font-size:11px;color:var(--text-secondary)">';
+      bus.forEach(b => {
+        const btemp = b.temp !== undefined && b.temp > -50 ? b.temp.toFixed(1) + '°C' : 'N/D';
+        busHtml += '<div style="padding:2px 0">Device #' + b.index + ': ' + btemp + '</div>';
+      });
+      busHtml += '</div>';
+    }
+
+    html += '<div style="padding:8px 0;border-bottom:1px solid var(--border)">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center">' +
+      '<div><strong>' + s.name + '</strong> ' + found + '<br><span style="font-size:12px;color:var(--text-secondary)">' + temp + '</span></div>' +
+      '<button class="btn btn-primary" style="width:auto;padding:6px 16px" onclick="startCalibration(' + i + ')" ' + disabled + '>' +
+      (cal && calIdx === i ? 'Calibrating...' : 'Calibrate') +
+      '</button></div>' +
+      busHtml +
+      '</div>';
+  });
+
+  container.innerHTML = html;
+
+  // Status
+  const statusDiv = document.getElementById('calibrateStatus');
+  const infoDiv = document.getElementById('calibrateInfo');
+  if (cal) {
+    statusDiv.style.display = 'block';
+    infoDiv.innerHTML = 'Calibrating sensor <strong>' + (mapping[calIdx] ? mapping[calIdx].name : '?') + '</strong>... ' +
+      '<br><button class="btn btn-outline" style="width:auto;padding:4px 12px;margin-top:8px" onclick="cancelCalibration()">Cancel</button>';
+  } else {
+    statusDiv.style.display = 'none';
+  }
+}
+
+function startCalibration(idx) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) { showToast('Not connected'); return; }
+  ws.send(JSON.stringify({type: 'startCalibration', index: idx}));
+}
+
+function cancelCalibration() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) { showToast('Not connected'); return; }
+  ws.send(JSON.stringify({type: 'cancelCalibration'}));
+}
+
+// ======== OTA ========
+function updateOTABanner() {
+  const banner = document.getElementById('otaBanner');
+  const countdown = document.getElementById('otaCountdown');
+  if (state && state.ota_pending) {
+    banner.classList.remove('hidden');
+    countdown.textContent = state.ota_remaining || '--';
+  } else {
+    banner.classList.add('hidden');
+  }
+}
+
+function confirmOta() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) { showToast('Not connected'); return; }
+  ws.send(JSON.stringify({type: 'confirmOta'}));
+}
+
+// ======== OTA countdown timer ========
+setInterval(() => {
+  if (state && state.ota_pending && state.ota_remaining > 0) {
+    state.ota_remaining--;
+    document.getElementById('otaCountdown').textContent = state.ota_remaining;
+  }
+}, 1000);
+
+// ======== Tabs ========
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(tc => tc.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
+  });
+});
+
+// ======== Toast ========
+let toastTimer = null;
+function showToast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 3000);
+}
+
+// ======== Init ========
+connectWS();
+
+// Periodic reconnection check + full state refresh
+setInterval(() => {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    connectWS();
+  } else {
+    // Keep-alive: request full state every 30s
+    ws.send(JSON.stringify({type: 'getFullState'}));
+  }
+}, 30000);
+</script>
+</body>
+</html>
