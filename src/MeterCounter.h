@@ -1,10 +1,12 @@
 /******************************************************************
  * MeterCounter.h - Импульсные счётчики ГВС и ХВС
  * 
- * Использует прерывания по CHANGE с аппаратным антидребезгом:
- *   - После FALLING блокируем новые FALLING, пока не увидим RISING
- *   - Это гарантирует, что каждый импульс считается ровно один раз,
- *     независимо от длительности импульса и дребезга геркона.
+ * Использует прерывания по CHANGE с двухуровневым антидребезгом:
+ *   1. Временной: игнорирует FALLING, если с последнего прошло < 50ms
+ *   2. Флаговый: после FALLING блокирует новые, пока не увидит RISING
+ * 
+ * Это гарантирует, что каждый импульс считается ровно один раз,
+ * даже при сильном дребезге геркона.
  * 
  * Защита от потери при noInterrupts():
  *   - _pulseCount только INCREMENT в прерывании
@@ -29,7 +31,8 @@ private:
   uint8_t _pin;
   volatile uint32_t _pulseCount;       // только +1 в прерывании
   volatile bool _waitingForRelease;    // true: ждём RISING (геркон разомкнётся)
-  uint16_t _debounceMicros;            // 2000 = 2ms (достаточно для геркона)
+  volatile uint32_t _lastFallingMicros; // время последнего FALLING (микросекунды)
+  uint32_t _debounceInterval;          // 50000 = 50ms — игнорируем FALLING после предыдущего
   ConfigStore *_store;
   bool _isHot;
   
@@ -38,7 +41,8 @@ private:
   
 public:
   MeterCounter() : _pin(0), _pulseCount(0), _waitingForRelease(false),
-                   _debounceMicros(2000), _store(nullptr), _isHot(true) {}
+                   _lastFallingMicros(0), _debounceInterval(50000),
+                   _store(nullptr), _isHot(true) {}
   
   void begin(uint8_t pin, bool isHot, ConfigStore *store) {
     _pin = pin;
@@ -66,8 +70,8 @@ public:
         _isHot ? "Hot" : "Cold");
     }
     
-    Serial.printf("[Meter] %s on pin %d (CHANGE, debounce=%uus)\n",
-      _isHot ? "Hot" : "Cold", _pin, _debounceMicros);
+    Serial.printf("[Meter] %s on pin %d (CHANGE, debounce=%ums)\n",
+      _isHot ? "Hot" : "Cold", _pin, _debounceInterval / 1000);
   }
   
   // Прерывание по CHANGE — ловит и FALLING, и RISING
@@ -80,16 +84,24 @@ public:
   }
   
   void IRAM_ATTR handleInterrupt() {
-    bool pinState = digitalRead(_pin);  // читаем сразу, т.к. мы в прерывании
+    bool pinState = digitalRead(_pin);
+    uint32_t now = micros();
     
     if (pinState == LOW) {
       // FALLING: геркон замкнулся
-      // Если не ждём размыкания — засчитываем импульс и переходим в ожидание
+      // Временной антидребезг: игнорируем FALLING, если с последнего прошло < debounceInterval
+      if (now - _lastFallingMicros < _debounceInterval) {
+        // Слишком быстро — дребезг, игнорируем
+        _lastFallingMicros = now;
+        return;
+      }
+      _lastFallingMicros = now;
+      
+      // Если не ждём размыкания — засчитываем импульс
       if (!_waitingForRelease) {
         _pulseCount++;
         _waitingForRelease = true;
       }
-      // Если _waitingForRelease уже true — это дребезг, игнорируем
     } else {
       // RISING: геркон разомкнулся
       // Разрешаем следующий FALLING
