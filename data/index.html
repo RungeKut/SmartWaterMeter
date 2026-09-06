@@ -33,22 +33,40 @@ body {
 .header {
   background: var(--primary);
   color: #fff;
-  padding: 16px;
-  text-align: center;
+  max-width: 640px;
+  margin: 0 auto;
   position: sticky;
   top: 0;
   z-index: 100;
   box-shadow: 0 2px 8px rgba(0,0,0,.15);
+  border-radius: 0 0 8px 8px;
+}
+.header .inner {
+  padding: 16px 12px;
+  text-align: center;
 }
 .header h1 { font-size: 18px; font-weight: 500; }
 .header .sub { font-size: 12px; opacity: .8; }
+.header .badge-ap {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  background: #FF8F00;
+  color: #fff;
+  border-radius: 3px;
+  padding: 1px 6px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
 .tabs {
   display: flex;
   background: var(--card);
   border-bottom: 1px solid var(--border);
   position: sticky;
-  top: 56px;
+  top: 54px;
   z-index: 99;
+  max-width: 640px;
+  margin: 0 auto;
 }
 .tab {
   flex: 1;
@@ -170,8 +188,10 @@ label { font-size: 12px; color: var(--text-secondary); display: block; margin-bo
 <body>
 
 <div class="header">
-  <h1>SmartWaterMeter</h1>
-  <div class="sub" id="headerSub">Connecting...</div>
+  <div class="inner">
+    <h1>SmartWaterMeter <span id="apBadge" class="badge-ap hidden">AP</span></h1>
+    <div class="sub" id="headerSub">Connecting...</div>
+  </div>
 </div>
 
 <div class="tabs">
@@ -354,6 +374,7 @@ function handleMessage(msg) {
       updateDashboard();
       updateSettings();
       updateCalibrate();
+      updateCalibrateBusTable();
       updateOTABanner();
       break;
     case 'sensors':
@@ -399,6 +420,15 @@ function handleMessage(msg) {
 // ======== Dashboard ========
 function updateDashboard() {
   if (!state) return;
+
+  // Header: device name + AP badge
+  const apBadge = document.getElementById('apBadge');
+  if (state.ap_mode) {
+    apBadge.classList.remove('hidden');
+  } else {
+    apBadge.classList.add('hidden');
+  }
+  document.getElementById('headerSub').textContent = state.device || 'SmartWaterMeter';
 
   // Temps
   const t = state.temperatures || {};
@@ -553,14 +583,19 @@ function updateCalibrateBusTable() {
     '<tr style="border-bottom:1px solid var(--border);color:var(--text-secondary)">' +
     '<th style="text-align:left;padding:6px 4px">#</th>' +
     '<th style="text-align:left;padding:6px 4px">Address</th>' +
-    '<th style="text-align:right;padding:6px 4px">Temp</th></tr>';
+    '<th style="text-align:right;padding:6px 4px">Temp</th>' +
+    '<th style="text-align:right;padding:6px 4px">Delta</th></tr>';
   bus.forEach(b => {
     const addr = b.address || '';
     const temp = b.temp !== undefined && b.temp > -50 ? b.temp.toFixed(1) + '°C' : 'N/D';
+    const delta = b.delta !== undefined ? (b.delta > 0 ? '+' : '') + b.delta.toFixed(1) + '°' : '';
+    const deltaStyle = b.delta !== undefined && b.delta > 3 ? 'color:var(--orange);font-weight:700' :
+                       b.delta !== undefined && b.delta > 0 ? 'color:var(--green)' : '';
     html += '<tr style="border-bottom:1px solid var(--border)">' +
       '<td style="padding:6px 4px">' + b.index + '</td>' +
       '<td style="padding:6px 4px;font-family:monospace;font-size:12px">' + addr + '</td>' +
-      '<td style="padding:6px 4px;text-align:right;font-weight:600">' + temp + '</td></tr>';
+      '<td style="padding:6px 4px;text-align:right;font-weight:600">' + temp + '</td>' +
+      '<td style="padding:6px 4px;text-align:right;' + deltaStyle + '">' + delta + '</td></tr>';
   });
   html += '</table>';
   container.innerHTML = html;

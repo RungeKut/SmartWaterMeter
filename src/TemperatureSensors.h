@@ -21,6 +21,7 @@
 #include <DallasTemperature.h>
 
 #define NUM_SENSORS 4
+#define MAX_BUS_DEVICES 16
 #define CALIBRATE_THRESHOLD 5.0
 #define CALIBRATE_TIMEOUT 60000
 
@@ -37,8 +38,8 @@ private:
 
   bool _calibrating;
   int _calibrateIndex;
-  float _calibrateBaseTemp[NUM_SENSORS];
-  DeviceAddress _allAddrs[16];
+  float _calibrateBaseTemp[MAX_BUS_DEVICES];
+  DeviceAddress _allAddrs[MAX_BUS_DEVICES];
   uint8_t _allAddrsCount;
   uint32_t _calibrateStartTime;
   CalibrateCallback _calibrateCb;
@@ -62,7 +63,7 @@ public:
     Serial.printf("[DS18B20] Found sensors: %d\n", _deviceCount);
 
     // Print all sensor addresses on the bus
-    for (uint8_t i = 0; i < _deviceCount && i < 16; i++) {
+    for (uint8_t i = 0; i < _deviceCount && i < MAX_BUS_DEVICES; i++) {
       DeviceAddress addr;
       if (_sensors.getAddress(addr, i)) {
         Serial.printf("[DS18B20] Bus[%d]: ", i);
@@ -101,7 +102,7 @@ public:
 
     _oneWire.reset_search();
     DeviceAddress addr;
-    while (_oneWire.search(addr) && _allAddrsCount < 16) {
+    while (_oneWire.search(addr) && _allAddrsCount < MAX_BUS_DEVICES) {
       if (OneWire::crc8(addr, 7) == addr[7]) {
         memcpy(_allAddrs[_allAddrsCount], addr, 8);
         int mapped = findMapping(addr);
@@ -167,7 +168,7 @@ public:
     if (_calibrating) return;
 
     _allAddrsCount = 0;
-    for (uint8_t i = 0; i < _deviceCount && i < 16; i++) {
+    for (uint8_t i = 0; i < _deviceCount && i < MAX_BUS_DEVICES; i++) {
       if (_sensors.getAddress(_allAddrs[_allAddrsCount], i)) {
         _allAddrsCount++;
       }

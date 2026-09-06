@@ -241,6 +241,18 @@ void loop() {
     sensorConvPending = false;
     tempSensors.readTemperatures();
 
+    // Periodically rescan the 1-wire bus to detect new/removed sensors
+    static uint32_t lastRescan = 0;
+    if (now - lastRescan > 30000) {
+      lastRescan = now;
+      tempSensors.rescanBus();
+      // After rescan, start conversion immediately so next read cycle
+      // has fresh data for all devices
+      tempSensors.startConversion();
+      // Re-arm the async cycle: next read will happen ~850ms from now
+      lastSensorConv = now;
+    }
+
     // Broadcast to all WebSocket clients
     JsonDocument doc;
     doc["type"] = "sensors";
@@ -255,6 +267,10 @@ void loop() {
       JsonObject b = bus.createNestedObject();
       b["index"] = i;
       b["temp"] = tempSensors.getRawTemp(i);
+      if (tempSensors.isCalibrating()) {
+        b["baseTemp"] = tempSensors.getCalibrateBaseTemp(i);
+        b["delta"] = tempSensors.getCalibrateDelta(i);
+      }
       const uint8_t* addr = tempSensors.getAllAddr(i);
       if (addr) {
         char addrStr[17];
@@ -532,6 +548,10 @@ void sendFullState(AsyncWebSocketClient *client) {
     JsonObject b = bus.createNestedObject();
     b["index"] = i;
     b["temp"] = tempSensors.getRawTemp(i);
+    if (tempSensors.isCalibrating()) {
+      b["baseTemp"] = tempSensors.getCalibrateBaseTemp(i);
+      b["delta"] = tempSensors.getCalibrateDelta(i);
+    }
     // Format address as hex string
     const uint8_t* addr = tempSensors.getAllAddr(i);
     if (addr) {
@@ -648,8 +668,10 @@ void handleWsMessage(AsyncWebSocketClient *client, const String &msg) {
 
 // ==================== HTTP Routes ====================
 void setupHttpRoutes() {
-  // SPA frontend from LittleFS
-  server.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
+  // SPA frontend from LittleFS (no-cache for fresh updates on reflash)
+  server.serveStatic("/", LittleFS, "/")
+    .setDefaultFile("index.html")
+    .setCacheControl("no-cache, no-store, must-revalidate");
 
   // JSON API
   server.on("/api.json", HTTP_GET, [](AsyncWebServerRequest *request) {

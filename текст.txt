@@ -1,0 +1,33 @@
+SmartWaterMeter
+SmartWaterMeter-93C195
+Dashboard
+Settings
+Calibrate
+Bus Sensors
+All DS18B20 sensors currently on the 1-Wire bus:
+
+#	Address	Temp	Delta
+0	28E0A43D000000CE	28.7°C	+0.1°
+1	2848763E00000066	28.7°C	+0.1°
+2	287C7C3C000000ED	28.2°C	0.0°
+3	28822F3E00000050	28.4°C	+0.1°
+4	2842CD3D0000001E	29.1°C	+29.0°
+5	28EA303E00000021	28.4°C	+536870900.0°
+6	28C56C3E00000007	28.3°C	+28.0°
+7	2855743D0000007C	28.3°C	-1.511157e+23°
+Calibration
+Select a channel, then heat the physical DS18B20 by touching it. When the temperature rises by >5°C, its address will be saved.
+
+Cold Found
+28.6°C
+Calibrate
+Hot Found
+29.0°C
+Calibrate
+Return Found
+28.3°C
+Calibrate
+Supply Found
+29.0°C
+Calibrate
+Calibration started. Heat the sensor...
