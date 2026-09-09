@@ -1,21 +1,13 @@
-# SmartWaterMeter — Сводка по миграции архитектуры
+# SmartWaterMeter — Сводка по состоянию проекта
 
-## Что было сделано
+## Текущая архитектура
 
-### 1. Миграция с GyverPortal на ESPAsyncWebServer + WebSocket + LittleFS
+### Веб-сервер
+- **ESPAsyncWebServer** + **WebSocket** — асинхронный, не блокирует `loop()`
+- **LittleFS** — SPA-фронтенд лежит в файловой системе (не в прошивке)
+- **ArduinoJson 7.4.3** — структурированный обмен данными через WebSocket
 
-**Было:**
-- GyverPortal — синхронный веб-сервер с серверным рендерингом HTML
-- Каждое обновление данных — полная перезагрузка страницы
-- GyverPortal AJAX — тяжёлый, синхронный, не поддерживает real-time
-
-**Стало:**
-- ESPAsyncWebServer — асинхронный, не блокирует `loop()`
-- WebSocket — реальном времени: данные приходят на страницу сразу
-- LittleFS — фронтенд лежит в файловой системе (не в прошивке)
-- ArduinoJson — для структурированного обмена данными
-
-### 2. SPA-фронтенд (data/index.html)
+### SPA-фронтенд (data/index.html)
 
 Одна HTML-страница с тремя вкладками:
 
@@ -25,48 +17,21 @@
 | **Settings** | WiFi, SMTP (email), расписание отчётов, начальные показания счётчиков, коэффициенты |
 | **Calibrate** | Калибровка датчиков DS18B20: выбор датчика, нагрев, автоматическое определение |
 
-- Material Design стили
-- Dark Mode (через `prefers-color-scheme`)
+- Material Design стили + Dark Mode
 - WebSocket auto-reconnect
-- OTA-баннер с обратным отсчётом
+- Данные с датчиков обновляются каждые 5 секунд
+- OTA-баннер с обратным отсчётом (FailsafeOTA — 5 мин на подтверждение)
 
-### 3. Исправленные баги
+### Сборка (актуальная)
 
-#### TemperatureSensors.h
-1. **Рекурсия**: `readTemperatures()` вызывал `requestTemperatures()`, который вызывал `readTemperatures()` → бесконечный цикл. Убрал вызов `readTemperatures()` из `requestTemperatures()`, теперь это блокирующая обёртка: `startConversion()` + `delay(750)` + `readTemperatures()`.
-2. **rescanBus() в каждом цикле**: вызывался каждые 5 секунд в `loop()`, убивая шину OneWire. Теперь `rescanBus()` вызывается только при старте калибровки.
-3. **Порядок в конструкторе**: не совпадал с порядком объявления полей → warning. Исправлен.
+| Параметр | Значение |
+|---|---|
+| RAM | 52.5% (43032 / 81920 байт) |
+| Flash | 62.4% (651484 / 1044464 байт) |
+| Платформа | ESP8266 (Wemos D1 mini), 80MHz |
+| Статус | `pio run` — SUCCESS, 0 ошибок, 0 warning |
 
-#### Wemos_Mini.ino (loop)
-4. **Порядок чтения датчиков**: было `readTemperatures()` → `startConversion()` → `rescanBus()`. Правильно: `startConversion()` в одной итерации, `readTemperatures()` через 850мс в следующей. Теперь двухфазный цикл с флагом `sensorConvPending`.
-
-## Сборка
-
-- **RAM**: 52.1% (42680 / 81920 байт)
-- **Flash**: 62.2% (649956 / 1044464 байт)
-- Платформа: ESP8266 (Wemos D1 mini), 80MHz
-- **pio run**: SUCCESS, 0 ошибок, 0 warning
-
-## Файловая структура (изменённые файлы)
-
-```
-SmartWaterMeter/
-  platformio.ini              — обновлён (ESPAsyncTCP, ESPAsyncWebServer, ArduinoJson)
-  src/
-    Wemos_Mini.ino            — переписан (ESPAsyncWebServer + WebSocket)
-    TemperatureSensors.h      — исправлены баги
-    ConfigStore.h             — без изменений
-    MeterCounter.h            — без изменений
-    StatusLED.h               — без изменений
-    TelnetSerial.h            — без изменений
-    FailsafeOTA.h             — без изменений
-    secrets.h.example         — без изменений
-  data/
-    index.html                — НОВЫЙ (SPA фронтенд)
-  CHAT_SUMMARY.md             — НОВЫЙ
-```
-
-## Зависимости (lib_deps)
+### Зависимости (lib_deps)
 
 | Библиотека | Версия |
 |---|---|
@@ -77,7 +42,40 @@ SmartWaterMeter/
 | me-no-dev/ESPAsyncWebServer | 3.6.0 |
 | bblanchon/ArduinoJson | 7.4.3 |
 
-Старый GyverPortal удалён из сборки (в `lib_ignore`).
+GyverPortal удалён из сборки (в `lib_ignore`).
+
+---
+
+## История изменений
+
+### [1] Миграция с GyverPortal на ESPAsyncWebServer + WebSocket + LittleFS
+- Полная замена веб-стека: синхронный GyverPortal → асинхронный ESPAsyncWebServer
+- SPA-фронтенд на Material Design вместо серверного HTML
+- WebSocket для real-time обновлений
+- `loop()` переписан под асинхронный цикл DS18B20 (двухфазный: startConversion → 850ms → readTemperatures)
+
+### [2] Исправление рекурсии в TemperatureSensors.h
+- `readTemperatures()` вызывал `requestTemperatures()`, который вызывал `readTemperatures()` → бесконечный цикл
+- Убран вызов `readTemperatures()` из `requestTemperatures()`, теперь это блокирующая обёртка
+
+### [3] Исправление порождающего watchdog-reset бага (09.09.2026)
+**Симптомы**: плата зависала при старте — LED горел постоянно, мусор на COM, ни WiFi, ни AP, циклический watchdog reset.
+
+**Корневая причина** — два коммита (f44f264 + bc54809) внесли:
+1. **`sensorInterval` 5000 → 1000 мс** — каждый 1 секунду запускалась 750ms конверсия DS18B20. При 12-bit точности это не оставляло времени loop() на обслуживание WiFi/WebServer.
+2. **`rescanBus()` + `startConversion()` в фазе чтения** — каждые 30 секунд после `readTemperatures()` вызывался `rescanBus()` (дёргает `_oneWire.reset_search()`), а затем немедленно `startConversion()` + `lastSensorConv = now`. Это срывало асинхронный протокол OneWire: следующий `readTemperatures()` через 850ms попадал на незавершённую конвертацию → зависание в `DallasTemperature::getTempC()` → **ESP8266 watchdog reset** → циклическая перезагрузка.
+
+**Также**: `flush()` в MeterCounter вызывал `saveMeters()` (запись в EEPROM) при **каждом** импульсе — износ EEPROM.
+
+**Исправление** (commit `c932ac9`):
+- `sensorInterval` восстановлен до 5000 мс (1000 мс при калибровке)
+- Убран `rescanBus()` из `loop()` — теперь только при старте калибровки
+- Убран повторный `startConversion()` после рескана
+- `MeterCounter::flush()` больше не пишет в EEPROM — возвращает `bool`, сохранение отложено на 5-минутный цикл
+- `EEPROM.saveMeters()` и `save()` вызываются вместе раз в 5 минут
+- IP точки доступа: `192.168.0.1/24`
+
+---
 
 ## Инструкция по прошивке
 
@@ -87,7 +85,7 @@ SmartWaterMeter/
 # Сборка
 pio run
 
-# Заливка прошивки в оба слота (A/B)
+# Заливка прошивки
 pio run --target upload --upload-port COM3
 
 # Заливка файловой системы (LittleFS) с SPA фронтендом
@@ -107,7 +105,7 @@ pio run --target uploadfs --upload-port 192.168.x.x
 ### Первый запуск
 
 1. Подключитесь к точке доступа `SmartWaterMeter-XXXXXX` (открытая)
-2. Откройте `http://192.168.4.1`
+2. Откройте `http://192.168.0.1`
 3. В настройках укажите SSID и пароль WiFi
 4. Настройте SMTP при необходимости
 5. Откалибруйте датчики температуры

@@ -62,10 +62,13 @@ public:
     _deviceCount = _sensors.getDeviceCount();
     Serial.printf("[DS18B20] Found sensors: %d\n", _deviceCount);
 
-    // Print all sensor addresses on the bus
-    for (uint8_t i = 0; i < _deviceCount && i < MAX_BUS_DEVICES; i++) {
+    // Fill _allAddrs for calibration bus table
+    _allAddrsCount = 0;
+    for (uint8_t i = 0; i < _deviceCount && _allAddrsCount < MAX_BUS_DEVICES; i++) {
       DeviceAddress addr;
       if (_sensors.getAddress(addr, i)) {
+        memcpy(_allAddrs[_allAddrsCount], addr, 8);
+        _allAddrsCount++;
         Serial.printf("[DS18B20] Bus[%d]: ", i);
         for (int j = 0; j < 8; j++) {
           Serial.printf("%02X", addr[j]);
