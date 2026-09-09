@@ -33,7 +33,7 @@
 | WiFiupd | каждый цикл | WiFi/AP поддержание |
 | updateLocalTime | каждый цикл | NTP время |
 | LED mode | каждый цикл | Выбор режима по состоянию |
-| DS18B20 фаза 1 | 5000ms (1000ms калибровка) | startConversion |
+| DS18B20 фаза 1 | 2000ms (1000ms калибровка) | startConversion |
 | DS18B20 фаза 2 | через ≥850ms | readTemperatures + broadcast |
 | rescanBusLight | каждые 30с | Обновление списка шины |
 | MeterCounter::flush | каждый цикл | Сбор импульсов |

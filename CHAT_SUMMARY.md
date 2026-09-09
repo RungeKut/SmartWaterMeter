@@ -44,6 +44,16 @@
 
 GyverPortal удалён из сборки (в `lib_ignore`).
 
+### Сборка (актуальная)
+
+| Параметр | Значение |
+|---|---|
+| RAM | 52.6% (43080 / 81920 байт) |
+| Flash | 62.4% (651724 / 1044464 байт) |
+| Платформа | ESP8266 (Wemos D1 mini), 80MHz |
+| Статус | `pio run` — SUCCESS, 0 ошибок, 0 warning |
+| Интервал DS18B20 | 2000 мс (1000 мс при калибровке) |
+
 ---
 
 ## История изменений
@@ -74,6 +84,38 @@ GyverPortal удалён из сборки (в `lib_ignore`).
 - `MeterCounter::flush()` больше не пишет в EEPROM — возвращает `bool`, сохранение отложено на 5-минутный цикл
 - `EEPROM.saveMeters()` и `save()` вызываются вместе раз в 5 минут
 - IP точки доступа: `192.168.0.1/24`
+
+### [4] fix: заполнять _allAddrs в begin() для отображения датчиков на странице калибровки
+- Массив `_allAddrs` не заполнялся в `begin()`, WebSocket не содержал `busDevices`
+- Страница Calibrate показывала "No sensors detected on bus"
+
+### [5] feat: периодический rescan шины (каждые 30с)
+- Добавлен `rescanBusLight()` — обновляет `_allAddrs[]` без тротчинга `_found[]`
+- Вызывается в `loop()` после `readTemperatures()` раз в 30 секунд
+
+### [6] chore: заменить 192.168.4.1 → 192.168.0.1 во всех файлах
+- AP-режим настроен на `192.168.0.1`, но в index.html, README, логе оставался старый адрес
+
+### [7] docs: модульная структура документации для GigaCode
+- `DOCUMENTATION.md` (>600 строк) разбит на модульные файлы в `docs/`
+- Создан `docs/_index.md` — точка входа с картой документации и правилами
+- Каждый модуль в отдельном файле: `docs/modules/sensors.md`, `docs/modules/meters.md`, `docs/modules/core-loop.md`, `docs/modules/config.md`, `docs/modules/led.md`, `docs/modules/telnet.md`, `docs/modules/ota.md`
+- Все подводные камни — в `docs/pitfalls.md`
+- Создан `.gigacode/rules.md` — глобальные правила для GigaCode CLI
+
+### [8] fix: rescanBusLight() ломал DallasTemperature прямым OneWire
+- `rescanBusLight()` вызывал `_oneWire.search()` напрямую, сбивая внутреннее состояние DallasTemperature
+- После рескана все датчики возвращали `DEVICE_DISCONNECTED_C` на странице
+- Исправлено: теперь используется `_sensors.getDeviceCount()` + `_sensors.getAddress()`
+
+### [9] docs: EEPROM, причины сброса настроек, защита при прошивке
+- `docs/pitfalls.md`: карта flash-памяти, 4 причины потери настроек (FailsafeOTA, erase, USB, питание)
+- `docs/build-flash.md`: важное примечание про EEPROM и FailsafeOTA
+- `platformio.ini`: `board_upload.erase_cmd =` — защита от случайного стирания
+
+### [10] fix: интервал датчиков 5000 → 2000 мс
+- Dashboard и Calibrate теперь получают данные с одинаковой частотой (~2 сек)
+- 2000 мс безопасно: конверсия ~750 мс, ~1250 мс на WiFi/WebSocket
 
 ---
 
