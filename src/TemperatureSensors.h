@@ -98,6 +98,7 @@ public:
   }
 
   // Fast bus rescan (~5-10ms, does NOT re-init DallasTemperature)
+  // Also resets _found[] — use for calibration start only
   void rescanBus() {
     _allAddrsCount = 0;
     _deviceCount = 0;
@@ -114,6 +115,24 @@ public:
       }
     }
     _deviceCount = _allAddrsCount;
+  }
+
+  // Lightweight bus rescan — only refreshes _allAddrs[] for calibration bus table,
+  // does NOT touch _found[] or _expectedAddrs. Safe to call every ~30s after readTemperatures().
+  void rescanBusLight() {
+    _allAddrsCount = 0;
+
+    _oneWire.reset_search();
+    DeviceAddress addr;
+    while (_oneWire.search(addr) && _allAddrsCount < MAX_BUS_DEVICES) {
+      if (OneWire::crc8(addr, 7) == addr[7]) {
+        memcpy(_allAddrs[_allAddrsCount], addr, 8);
+        _allAddrsCount++;
+      }
+    }
+    _deviceCount = _allAddrsCount;
+
+    Serial.printf("[DS18B20] light rescan: %d devices on bus\n", _allAddrsCount);
   }
 
   // Start async temperature conversion (~750ms on 12-bit resolution)

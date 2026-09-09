@@ -77,6 +77,7 @@ uint32_t lastWiFiRetry = 0;
 uint32_t lastSensorRead = 0;
 uint32_t lastSensorConv = 0;
 bool sensorConvPending = false;
+uint32_t lastBusRescan = 0;
 uint32_t lastEepromSave = 0;
 uint32_t lastEmailSend = 0;
 uint32_t lastMeterFlush = 0;
@@ -274,6 +275,12 @@ void loop() {
       }
     }
     wsBroadcastJson(doc);
+
+    // Periodic bus rescan (every 30s) to detect newly connected/disconnected sensors
+    if (now - lastBusRescan > 30000 && !tempSensors.isCalibrating()) {
+      lastBusRescan = now;
+      tempSensors.rescanBusLight();
+    }
   }
 
   // ---- Meters: flush pulses every loop cycle when sensors are read (~1s) ----
