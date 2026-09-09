@@ -4,11 +4,13 @@
 
 **Проблема:** Массив `_allAddrs[]`, который отображается в таблице **Bus Sensors** на вкладке Calibrate, изначально заполнялся только один раз — в методе `begin()`. При подключении или отключении датчика таблица не обновлялась.
 
-**Решение:** Добавлен метод `rescanBusLight()`, который безопасно пересканирует шину 1-Wire, обновляя только `_allAddrs[]`. Он вызывается в `loop()` каждые 30 секунд, сразу после `readTemperatures()`, когда шина свободна и конверсия не выполняется.
+**Решение:** Добавлен метод `rescanBusLight()`, который пересканирует датчики на шине через штатный API DallasTemperature (`getDeviceCount()` + `getAddress()`). Вызывается в `loop()` каждые 30 секунд, сразу после `readTemperatures()`.
+
+**Важно:** В первой версии `rescanBusLight()` использовал прямой вызов `_oneWire.search()`, что сбивало внутреннее состояние DallasTemperature. После рескана все датчики возвращали `DEVICE_DISCONNECTED_C`. Исправлено — теперь используется только DallasTemperature API.
 
 **Отличие `rescanBusLight()` от `rescanBus()`:**
 - `rescanBusLight()` **не трогает** `_found[]` и `_expectedAddrs` — маппинг каналов не сбрасывается
-- `rescanBusLight()` **не сбрасывает** `_deviceCount` из DallasTemperature
+- `rescanBusLight()` работает через DallasTemperature API — безопасен для конвейера конверсии
 - `rescanBusLight()` выводит в Serial только количество найденных устройств
 
 **Когда таблица шины обновляется:**
@@ -67,7 +69,17 @@
 - AP-режим: `192.168.0.1/24`
 - В коде не должно быть упоминаний `192.168.4.1` — это адрес ESP8266 SoftAP по умолчанию
 
-## 10. FailsafeOTA
+## 10. DallasTemperature: прямой доступ к OneWire ломает состояние
+
+**Никогда** не вызывай `_oneWire.search()`, `_oneWire.reset_search()` или другие методы OneWire напрямую, если используется DallasTemperature. Это сбивает внутренний кеш адресов DallasTemperature.
+
+**Симптом:** после прямого обращения к OneWire, `_sensors.getTempC()` начинает возвращать `DEVICE_DISCONNECTED_C` (`-127°C`) для всех датчиков.
+
+**Решение:** всегда работай через API DallasTemperature: `_sensors.getAddress()`, `_sensors.getDeviceCount()`, `_sensors.requestTemperatures()`.
+
+Это касается и `rescanBusLight()` — первая версия использовала прямой OneWire, что вызывало периодическое пропадание всех датчиков раз в 30 секунд.
+
+## 11. FailsafeOTA
 
 Механизм защиты от brick-прошивки:
 - После OTA — 5 минут на подтверждение
