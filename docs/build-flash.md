@@ -27,11 +27,42 @@ pio run --target uploadfs --upload-port COM3
 
 ```bash
 # Собрать и залить через WiFi
-pio run --target upload --upload-port 192.168.x.x
+pio run --target upload
 
 # Файловую систему тоже можно по WiFi
 pio run --target uploadfs --upload-port 192.168.x.x
 ```
+
+> **Важно:** Хост и ESP должны быть в одной сети. На хосте должен быть открыт TCP-порт 33777 (входящие) в Windows Firewall.
+
+### Если OTA не работает
+
+1. **Проверьте `--host_ip`** в `platformio.ini` — должен быть актуальный IP хоста (не ESP):
+   ```ini
+   upload_flags =
+       --host_ip=192.168.88.92    # IP вашего компьютера
+       --host_port=33777
+   ```
+2. **Проверьте правило Windows Firewall:**
+   ```cmd
+   netsh advfirewall firewall show rule name="PlatformIO OTA 33777"
+   ```
+3. **Добавьте правило, если отсутствует:**
+   ```cmd
+   netsh advfirewall firewall add rule name="PlatformIO OTA 33777" dir=in action=allow protocol=TCP localport=33777
+   ```
+4. **Проверьте связность:** ESP должна пинговаться с компьютера
+5. **После OTA обязательно подтвердите прошивку** — иначе FailsafeOTA выполнит откат через 5 минут:
+   - Откройте `http://192.168.88.87/confirm` в браузере
+   - Или нажмите **Confirm** на OTA-баннере в веб-интерфейсе
+
+### Типовые ошибки OTA
+
+| Ошибка | Причина | Решение |
+|--------|---------|---------|
+| `Listen Failed` | `--host_ip` не соответствует IP хоста | Укажите актуальный IP в `platformio.ini` |
+| `No response from device` | Firewall блокирует порт 33777 | Добавьте правило FW (см. выше) |
+| ESP не пингуется после OTA | Идёт перезагрузка (10-15 сек) | Подождите и повторите ping |
 
 ## Первый запуск
 

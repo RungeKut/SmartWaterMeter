@@ -19,15 +19,15 @@
 
 - Material Design стили + Dark Mode
 - WebSocket auto-reconnect
-- Данные с датчиков обновляются каждые 5 секунд
+- Данные с датчиков обновляются каждые 2 секунды
 - OTA-баннер с обратным отсчётом (FailsafeOTA — 5 мин на подтверждение)
 
 ### Сборка (актуальная)
 
 | Параметр | Значение |
 |---|---|
-| RAM | 52.5% (43032 / 81920 байт) |
-| Flash | 62.4% (651484 / 1044464 байт) |
+| RAM | 53.1% (43468 / 81920 байт) |
+| Flash | 62.5% (652400 / 1044464 байт) |
 | Платформа | ESP8266 (Wemos D1 mini), 80MHz |
 | Статус | `pio run` — SUCCESS, 0 ошибок, 0 warning |
 
@@ -42,76 +42,56 @@
 | me-no-dev/ESPAsyncWebServer | 3.6.0 |
 | bblanchon/ArduinoJson | 7.4.3 |
 
-GyverPortal удалён из сборки (в `lib_ignore`).
-
-### Сборка (актуальная)
-
-| Параметр | Значение |
-|---|---|
-| RAM | 52.6% (43080 / 81920 байт) |
-| Flash | 62.4% (651724 / 1044464 байт) |
-| Платформа | ESP8266 (Wemos D1 mini), 80MHz |
-| Статус | `pio run` — SUCCESS, 0 ошибок, 0 warning |
-| Интервал DS18B20 | 2000 мс (1000 мс при калибровке) |
-
 ---
 
-## История изменений
+## Последние изменения
 
-### [1] Миграция с GyverPortal на ESPAsyncWebServer + WebSocket + LittleFS
-- Полная замена веб-стека: синхронный GyverPortal → асинхронный ESPAsyncWebServer
-- SPA-фронтенд на Material Design вместо серверного HTML
-- WebSocket для real-time обновлений
-- `loop()` переписан под асинхронный цикл DS18B20 (двухфазный: startConversion → 850ms → readTemperatures)
+### [12] fix: OTA-тест — исправлен host_ip, добавлено правило FW (10.09.2026)
 
-### [2] Исправление рекурсии в TemperatureSensors.h
-- `readTemperatures()` вызывал `requestTemperatures()`, который вызывал `readTemperatures()` → бесконечный цикл
-- Убран вызов `readTemperatures()` из `requestTemperatures()`, теперь это блокирующая обёртка
+**Проблема:**
+- `platformio.ini` содержал устаревший `--host_ip=192.168.88.113` (предыдущий IP хоста для portproxy)
+- OTA падал с `Listen Failed` на несуществующем адресе
+- После исправления IP — ошибка `No response from device` из-за блокировки порта 33777 Windows Firewall
 
-### [3] Исправление порождающего watchdog-reset бага (09.09.2026)
-**Симптомы**: плата зависала при старте — LED горел постоянно, мусор на COM, ни WiFi, ни AP, циклический watchdog reset.
+**Исправления:**
+- `platformio.ini`: `--host_ip` изменён с `192.168.88.113` на актуальный `192.168.88.92`
+- На хосте добавлено правило Windows Firewall: `PlatformIO OTA 33777` (TCP in, порт 33777)
 
-**Корневая причина** — два коммита (f44f264 + bc54809) внесли:
-1. **`sensorInterval` 5000 → 1000 мс** — каждый 1 секунду запускалась 750ms конверсия DS18B20. При 12-bit точности это не оставляло времени loop() на обслуживание WiFi/WebServer.
-2. **`rescanBus()` + `startConversion()` в фазе чтения** — каждые 30 секунд после `readTemperatures()` вызывался `rescanBus()` (дёргает `_oneWire.reset_search()`), а затем немедленно `startConversion()` + `lastSensorConv = now`. Это срывало асинхронный протокол OneWire: следующий `readTemperatures()` через 850ms попадал на незавершённую конвертацию → зависание в `DallasTemperature::getTempC()` → **ESP8266 watchdog reset** → циклическая перезагрузка.
+**Результаты OTA-теста:**
+- Сборка: SUCCESS (RAM 53.1%, Flash 62.5%)
+- OTA-upload: SUCCESS (28 сек, 656560 байт, `Result: OK`)
+- ESP перезагрузка: SUCCESS (18 мс, TTL=255)
+- Подтверждение прошивки (`/confirm`): SUCCESS
+- OTA-прошивка работает напрямую (хост и ESP в одной подсети `/24`)
 
-**Также**: `flush()` в MeterCounter вызывал `saveMeters()` (запись в EEPROM) при **каждом** импульсе — износ EEPROM.
+### [11] fix: Переписан FailsafeOTA — корректная адресация слотов, eboot, интеграция с ArduinoOTA (11.09.2026)
 
-**Исправление** (commit `c932ac9`):
-- `sensorInterval` восстановлен до 5000 мс (1000 мс при калибровке)
-- Убран `rescanBus()` из `loop()` — теперь только при старте калибровки
-- Убран повторный `startConversion()` после рескана
-- `MeterCounter::flush()` больше не пишет в EEPROM — возвращает `bool`, сохранение отложено на 5-минутный цикл
-- `EEPROM.saveMeters()` и `save()` вызываются вместе раз в 5 минут
-- IP точки доступа: `192.168.0.1/24`
+**Проблемы старой реализации:**
+- `getCurrentSlot()` — брал адрес переменной в RAM (`0x3FFFxxxx`), всегда возвращал слот 1
+- `rollback()` — неверные адреса: при slot=0 писал `0x100000` (начало slot B, а не slot A)
+- Нет интеграции с ArduinoOTA — `onEnd()` не выставлял флаг в RTC, откат никогда не срабатывал
+- Счётчик bootloop (3 retry) избыточен — достаточно одного retry для защиты
 
-### [4] fix: заполнять _allAddrs в begin() для отображения датчиков на странице калибровки
-- Массив `_allAddrs` не заполнялся в `begin()`, WebSocket не содержал `busDevices`
-- Страница Calibrate показывала "No sensors detected on bus"
+**Исправления в `FailsafeOTA.h`:**
+- `getCurrentSlot()` использует адрес функции (IROM `0x402xxxxx`), маскирует `0x3FFFFF`, сравнивает с `SLOT_B_IMAGE_ADDR=0x101000`
+- Корректные константы: `SLOT_A_IMAGE_ADDR=0x10000`, `SLOT_B_IMAGE_ADDR=0x101000`
+- `rollback()` пишет eboot command на противоположный слот с правильным адресом
+- Добавлен метод `updateFirmware()` — вызывается из `ArduinoOTA.onEnd()`, выставляет `RTC_MAGIC_FIRST_BOOT`
+- Упрощена логика: два состояния (FIRST_BOOT → RETRY → rollback) вместо счётчика до 3
 
-### [5] feat: периодический rescan шины (каждые 30с)
-- Добавлен `rescanBusLight()` — обновляет `_allAddrs[]` без тротчинга `_found[]`
-- Вызывается в `loop()` после `readTemperatures()` раз в 30 секунд
+**Доработки в `Wemos_Mini.ino`:**
+- `ArduinoOTA.onEnd()` вызывает `failsafe.updateFirmware()`
+- Добавлен HTTP-эндпоинт `/confirm` для подтверждения прошивки из браузера
 
-### [6] chore: заменить 192.168.4.1 → 192.168.0.1 во всех файлах
-- AP-режим настроен на `192.168.0.1`, но в index.html, README, логе оставался старый адрес
+**Изменения в `platformio.ini`:**
+- Раскомментированы `upload_protocol = espota` и `upload_port = 192.168.88.87`
+- Добавлены `upload_flags` для совместимости с пробросом через netsh (раскомментировать при необходимости)
 
-### [7] docs: модульная структура документации для GigaCode
-- `DOCUMENTATION.md` (>600 строк) разбит на модульные файлы в `docs/`
-- Создан `docs/_index.md` — точка входа с картой документации и правилами
-- Каждый модуль в отдельном файле: `docs/modules/sensors.md`, `docs/modules/meters.md`, `docs/modules/core-loop.md`, `docs/modules/config.md`, `docs/modules/led.md`, `docs/modules/telnet.md`, `docs/modules/ota.md`
-- Все подводные камни — в `docs/pitfalls.md`
-- Создан `.gigacode/rules.md` — глобальные правила для GigaCode CLI
-
-### [8] fix: rescanBusLight() ломал DallasTemperature прямым OneWire
-- `rescanBusLight()` вызывал `_oneWire.search()` напрямую, сбивая внутреннее состояние DallasTemperature
-- После рескана все датчики возвращали `DEVICE_DISCONNECTED_C` на странице
-- Исправлено: теперь используется `_sensors.getDeviceCount()` + `_sensors.getAddress()`
-
-### [9] docs: EEPROM, причины сброса настроек, защита при прошивке
-- `docs/pitfalls.md`: карта flash-памяти, 4 причины потери настроек (FailsafeOTA, erase, USB, питание)
-- `docs/build-flash.md`: важное примечание про EEPROM и FailsafeOTA
-- `platformio.ini`: `board_upload.erase_cmd =` — защита от случайного стирания
+**Статус тестирования:**
+- Сборка: SUCCESS (RAM 53.1%, Flash 62.5%)
+- USB-прошивка: SUCCESS (залита через COM3)
+- **OTA: SUCCESS** (см. [12] — протестирован: upload 28 сек, подтверждён через `/confirm`)
+- Условие: хост и ESP в одной подсети; на хосте открыт порт 33777 (TCP in) в Windows Firewall
 
 ### [10] fix: интервал датчиков 5000 → 2000 мс
 - Dashboard и Calibrate теперь получают данные с одинаковой частотой (~2 сек)
@@ -119,35 +99,38 @@ GyverPortal удалён из сборки (в `lib_ignore`).
 
 ---
 
+## Состояние оборудования
+
+**Устройство:** `SmartWaterMeter-93C195` (MAC: e8:9f:6d:93:c1:95)
+**IP:** `192.168.88.87`
+**Ревизия платы:** Wemos D1 mini, ESP8266, 4MB Flash
+**Последняя прошивка:** OTA (через WiFi), 10.09.2026
+**Датчики DS18B20:** подключены, показывают ~28°C (комнатная температура)
+**Счётчики:** горячая — 2.000 m³, холодная — 0.000 m³
+**WiFi:** connected, RSSI -78..-79 dBm
+
 ## Инструкция по прошивке
 
-### Первая прошивка (USB)
+### USB
 
 ```bash
-# Сборка
-pio run
-
-# Заливка прошивки
 pio run --target upload --upload-port COM3
-
-# Заливка файловой системы (LittleFS) с SPA фронтендом
-pio run --target uploadfs --upload-port COM3
+pio run --target uploadfs --upload-port COM3   # если менялся index.html
 ```
 
-### OTA-обновление
+### OTA (через WiFi)
 
 ```bash
-# Собрать и залить через WiFi
-pio run --target upload --upload-port 192.168.x.x
-
-# Файловую систему тоже можно по WiFi
-pio run --target uploadfs --upload-port 192.168.x.x
+pio run --target upload
 ```
 
-### Первый запуск
+> **Важно:** Хост и ESP должны быть в одной сети. На хосте должен быть открыт TCP-порт 33777 (входящие) в Windows Firewall. Если OTA не работает:
+> 1. Проверьте `upload_flags --host_ip` в `platformio.ini` — должен быть актуальный IP хоста
+> 2. Проверьте правило FW: `netsh advfirewall firewall show rule name="PlatformIO OTA 33777"`
+> 3. Если правило отсутствует: `netsh advfirewall firewall add rule name="PlatformIO OTA 33777" dir=in action=allow protocol=TCP localport=33777`
 
-1. Подключитесь к точке доступа `SmartWaterMeter-XXXXXX` (открытая)
-2. Откройте `http://192.168.0.1`
-3. В настройках укажите SSID и пароль WiFi
-4. Настройте SMTP при необходимости
-5. Откалибруйте датчики температуры
+### Первый запуск после USB
+
+1. Плата загрузится с новым FailsafeOTA
+2. Если **не было OTA** — баннер подтверждения НЕ появляется, всё работает сразу
+3. Если был OTA — открой `http://192.168.88.87/confirm` в браузере или нажми Confirm на баннере

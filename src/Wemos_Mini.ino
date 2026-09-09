@@ -138,13 +138,19 @@ void setup() {
 
   // OTA
   ArduinoOTA.setHostname(deviceName);
-  ArduinoOTA.onStart([]() { Serial.println("[OTA] Start"); });
-  ArduinoOTA.onEnd([]() { Serial.println("[OTA] Done"); });
+  ArduinoOTA.onStart([]() {
+    Serial.println("[OTA] Start");
+  });
+  ArduinoOTA.onEnd([]() {
+    Serial.println("[OTA] Done — setting failsafe flag");
+    failsafe.updateFirmware();
+  });
   ArduinoOTA.onProgress([](unsigned int p, unsigned int t) {
     Serial.printf("[OTA] %u%%\r", (p * 100) / t);
   });
   ArduinoOTA.onError([](ota_error_t e) {
     Serial.printf("[OTA] Error: %u\n", e);
+    // При ошибке OTA не выставляем флаг — всё остаётся как было
   });
   ArduinoOTA.begin();
 
@@ -692,6 +698,16 @@ void setupHttpRoutes() {
     json += "\"calibrating\":" + String(tempSensors.isCalibrating() ? "true" : "false");
     json += "}\n";
     request->send(200, "application/json", json);
+  });
+
+  // OTA confirmation endpoint (GET from browser)
+  server.on("/confirm", HTTP_GET, [](AsyncWebServerRequest *request) {
+    failsafe.confirm();
+    String html = "<html><head><meta charset=\"utf-8\"><meta http-equiv=\"refresh\" content=\"3;url=/\"></head><body>";
+    html += "<h2>Прошивка подтверждена!</h2>";
+    html += "<p>Возврат на главную через 3 секунды...</p>";
+    html += "</body></html>";
+    request->send(200, "text/html; charset=utf-8", html);
   });
 
   // Prometheus metrics
