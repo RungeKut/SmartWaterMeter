@@ -462,7 +462,7 @@ function updateDashboard() {
     : '<span class="badge err">' + (state.ap_mode ? 'AP mode' : 'Disconnected') + '</span>';
   
   document.getElementById('sysRSSI').textContent = state.wifi_rssi + ' dBm';
-  document.getElementById('sysIP').textContent = connected ? state.ap_ssid : '192.168.4.1';
+  document.getElementById('sysIP').textContent = connected ? state.ap_ssid : '192.168.0.1';
 
   if (state.time_valid && state.time_hour !== undefined) {
     const h = String(state.time_hour).padStart(2,'0');

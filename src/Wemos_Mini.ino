@@ -367,7 +367,7 @@ void startAPMode() {
     IPAddress(255, 255, 255, 0)
   );
   WiFi.softAP(apSSID, AP_PASS_DEFAULT);
-  Serial.printf("[WiFi] AP: %s (192.168.4.1)\n", apSSID);
+  Serial.printf("[WiFi] AP: %s (192.168.0.1)\n", apSSID);
   apModeActive = true;
   wifiConnected = false;
 }
