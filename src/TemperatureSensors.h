@@ -118,14 +118,17 @@ public:
   }
 
   // Lightweight bus rescan — only refreshes _allAddrs[] for calibration bus table,
-  // does NOT touch _found[] or _expectedAddrs. Safe to call every ~30s after readTemperatures().
+  // does NOT touch _found[] or _expectedAddrs.
+  // Uses DallasTemperature::getAddress() instead of raw OneWire to avoid
+  // desynchronizing the DallasTemperature internal state (which caused all
+  // sensors to return DEVICE_DISCONNECTED_C after rescan).
   void rescanBusLight() {
     _allAddrsCount = 0;
+    uint8_t count = _sensors.getDeviceCount();
 
-    _oneWire.reset_search();
-    DeviceAddress addr;
-    while (_oneWire.search(addr) && _allAddrsCount < MAX_BUS_DEVICES) {
-      if (OneWire::crc8(addr, 7) == addr[7]) {
+    for (uint8_t i = 0; i < count && _allAddrsCount < MAX_BUS_DEVICES; i++) {
+      DeviceAddress addr;
+      if (_sensors.getAddress(addr, i)) {
         memcpy(_allAddrs[_allAddrsCount], addr, 8);
         _allAddrsCount++;
       }
