@@ -225,8 +225,8 @@ void loop() {
 
   // ---- DS18B20: asynchronous conversion cycle ----
   // Phase 1: start conversion (triggers ~750ms on bus)
-  // Phase 2: read results (next loop cycle, ~1s later)
-  uint32_t sensorInterval = tempSensors.isCalibrating() ? 1000 : 1000;
+  // Phase 2: read results (next loop cycle)
+  uint32_t sensorInterval = tempSensors.isCalibrating() ? 1000 : 5000;
 
   if (!sensorConvPending && now - lastSensorRead > sensorInterval) {
     // Phase 1: start new conversion
@@ -241,18 +241,6 @@ void loop() {
     sensorConvPending = false;
     tempSensors.readTemperatures();
 
-    // Periodically rescan the 1-wire bus to detect new/removed sensors
-    static uint32_t lastRescan = 0;
-    if (now - lastRescan > 30000) {
-      lastRescan = now;
-      tempSensors.rescanBus();
-      // After rescan, start conversion immediately so next read cycle
-      // has fresh data for all devices
-      tempSensors.startConversion();
-      // Re-arm the async cycle: next read will happen ~850ms from now
-      lastSensorConv = now;
-    }
-
     // Broadcast to all WebSocket clients
     JsonDocument doc;
     doc["type"] = "sensors";
@@ -261,6 +249,10 @@ void loop() {
     t["hot"]    = tempSensors.getTempGVS();
     t["return"] = tempSensors.getTempReturn();
     t["supply"] = tempSensors.getTempSupply();
+    // Include live meter readings (updated every ~1s)
+    JsonObject m = doc.createNestedObject("meters");
+    m["hot_m3"]  = config.data.meterHotM3;
+    m["cold_m3"] = config.data.meterColdM3;
     // Include bus devices for live calibrate table
     JsonArray bus = doc.createNestedArray("busDevices");
     for (uint8_t i = 0; i < tempSensors.getAllAddrCount(); i++) {
@@ -284,16 +276,14 @@ void loop() {
     wsBroadcastJson(doc);
   }
 
-  // ---- Meters ----
-  if (now - lastMeterFlush > 10000) {
-    lastMeterFlush = now;
-    meterHot.flush();
-    meterCold.flush();
-  }
+  // ---- Meters: flush pulses every loop cycle when sensors are read (~1s) ----
+  meterHot.flush();
+  meterCold.flush();
 
-  // ---- EEPROM periodic save ----
+  // ---- EEPROM periodic save (every 5 min, includes meter values) ----
   if (now - lastEepromSave > 300000) {
     lastEepromSave = now;
+    config.saveMeters();
     config.save();
   }
 
@@ -372,8 +362,8 @@ void startAPMode() {
   Serial.println("[WiFi] Starting AP mode...");
   WiFi.mode(WIFI_AP);
   WiFi.softAPConfig(
-    IPAddress(192, 168, 4, 1),
-    IPAddress(192, 168, 4, 1),
+    IPAddress(192, 168, 0, 1),
+    IPAddress(192, 168, 0, 1),
     IPAddress(255, 255, 255, 0)
   );
   WiFi.softAP(apSSID, AP_PASS_DEFAULT);

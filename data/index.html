@@ -380,6 +380,7 @@ function handleMessage(msg) {
     case 'sensors':
       if (state) {
         state.temperatures = msg.temperatures;
+        if (msg.meters) state.meters = msg.meters;
         if (msg.busDevices) state.busDevices = msg.busDevices;
       }
       updateDashboard();

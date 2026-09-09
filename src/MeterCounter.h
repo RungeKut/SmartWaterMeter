@@ -93,8 +93,10 @@ public:
     }
   }
 
-  // Вызывается из loop() — сохраняет накопленные импульсы в EEPROM
-  void flush() {
+  // Вызывается из loop() — атомарно забирает накопленные импульсы
+  // и обновляет значения в RAM (без записи в EEPROM).
+  // Возвращает true, если были новые импульсы.
+  bool flush() {
     noInterrupts();
     uint32_t count = _pulseCount;
     _pulseCount = 0;
@@ -110,12 +112,13 @@ public:
         _store->data.meterColdM3 += totalM3;
       }
 
-      _store->saveMeters();
-
       Serial.printf("[Meter] %s: +%u pulses (%.3f m3, total %.3f)\n",
         _isHot ? "Hot" : "Cold", count, totalM3,
         _isHot ? _store->data.meterHotM3 : _store->data.meterColdM3);
+
+      return true;
     }
+    return false;
   }
 
   uint32_t getPulseCount() {
