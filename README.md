@@ -1,4 +1,4 @@
-﻿# SmartWaterMeter Olimp
+﻿# SmartWaterMeter
 
 Умный контроллер учёта воды и тепла на базе ESP8266 (Wemos D1 mini).
 
