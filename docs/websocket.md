@@ -114,6 +114,7 @@
   },
   "calibrating": false,
   "calibrate_index": -1,
+  "calibrate_remaining": 0,
   "sensorMapping": [
     { "name": "Cold", "found": true, "temp": 22.5 }
   ],
@@ -225,6 +226,22 @@
 ```json
 { "type": "cancelCalibration" }
 ```
+
+### `assignSensor`
+
+Ручное назначение датчика с шины на логический канал — альтернатива нагреву.
+
+```json
+{ "type": "assignSensor", "index": 0, "busIndex": 5 }
+```
+
+Ответ — `assignResult`:
+
+```json
+{ "type": "assignResult", "success": true, "message": "Return assigned, Cold released" }
+```
+
+Если выбранный датчик уже закреплён за другим каналом, тот освобождается, и это указано в `message`.
 
 ## Как работает WebSocket-соединение
 

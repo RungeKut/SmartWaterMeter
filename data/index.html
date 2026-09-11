@@ -428,6 +428,12 @@ function handleMessage(msg) {
         showToast('Calibration failed / timeout');
       }
       break;
+    case 'assignResult':
+      showToast(msg.message || (msg.success ? 'Assigned' : 'Assign failed'));
+      if (msg.success && ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({type: 'getFullState'}));
+      }
+      break;
     case 'calibrationCancelled':
       if (state) state.calibrating = false;
       updateCalibrate();
@@ -652,23 +658,33 @@ function updateCalibrateBusTable() {
     container.innerHTML = '<div style="font-size:13px;color:var(--text-secondary)">No sensors detected on bus</div>';
     return;
   }
+  const calibrating = !!(state && state.calibrating);
   let html = '<table style="width:100%;border-collapse:collapse;font-size:13px">' +
     '<tr style="border-bottom:1px solid var(--border);color:var(--text-secondary)">' +
     '<th style="text-align:left;padding:6px 4px">#</th>' +
     '<th style="text-align:left;padding:6px 4px">Address</th>' +
     '<th style="text-align:right;padding:6px 4px">Temp</th>' +
-    '<th style="text-align:right;padding:6px 4px">Delta</th></tr>';
+    '<th style="text-align:right;padding:6px 4px">Delta</th>' +
+    (calibrating ? '<th style="width:36px"></th>' : '') + '</tr>';
   bus.forEach(b => {
     const addr = b.address || '';
     const temp = b.temp !== undefined && b.temp > -50 ? b.temp.toFixed(1) + '°C' : 'N/D';
     const delta = b.delta !== undefined ? (b.delta > 0 ? '+' : '') + b.delta.toFixed(1) + '°' : '';
     const deltaStyle = b.delta !== undefined && b.delta > 3 ? 'color:var(--orange);font-weight:700' :
                        b.delta !== undefined && b.delta > 0 ? 'color:var(--green)' : '';
+    // Во время калибровки — кнопка «назначить этот датчик выбранному каналу»
+    const assignBtn = calibrating
+      ? '<td style="padding:6px 4px;text-align:right">' +
+        '<button class="btn btn-primary" style="width:28px;height:28px;padding:0;' +
+        'line-height:1;font-size:18px;margin:0" title="Assign to selected channel" ' +
+        'onclick="assignSensor(' + b.index + ')">+</button></td>'
+      : '';
     html += '<tr style="border-bottom:1px solid var(--border)">' +
       '<td style="padding:6px 4px">' + b.index + '</td>' +
       '<td style="padding:6px 4px;font-family:monospace;font-size:12px">' + addr + '</td>' +
       '<td style="padding:6px 4px;text-align:right;font-weight:600">' + temp + '</td>' +
-      '<td style="padding:6px 4px;text-align:right;' + deltaStyle + '">' + delta + '</td></tr>';
+      '<td style="padding:6px 4px;text-align:right;' + deltaStyle + '">' + delta + '</td>' +
+      assignBtn + '</tr>';
   });
   html += '</table>';
   container.innerHTML = html;
@@ -703,7 +719,14 @@ function updateCalibrate() {
   const infoDiv = document.getElementById('calibrateInfo');
   if (cal) {
     statusDiv.style.display = 'block';
-    infoDiv.innerHTML = 'Calibrating sensor <strong>' + (mapping[calIdx] ? mapping[calIdx].name : '?') + '</strong>... ' +
+    const left = state.calibrate_remaining;
+    const timeLeft = (left !== undefined && left > 0)
+      ? ' <span style="color:var(--text-secondary)">(' +
+        Math.floor(left / 60) + ':' + String(left % 60).padStart(2, '0') + ' left)</span>'
+      : '';
+    infoDiv.innerHTML = 'Calibrating <strong>' + (mapping[calIdx] ? mapping[calIdx].name : '?') + '</strong>' + timeLeft +
+      '<br><span style="font-size:12px;color:var(--text-secondary)">Heat the sensor by &gt;5&deg;C, ' +
+      'or press <strong>+</strong> in the bus table to pick it manually.</span>' +
       '<br><button class="btn btn-outline" style="width:auto;padding:4px 12px;margin-top:8px" onclick="cancelCalibration()">Cancel</button>';
   } else {
     statusDiv.style.display = 'none';
@@ -713,6 +736,16 @@ function updateCalibrate() {
 function startCalibration(idx) {
   if (!ws || ws.readyState !== WebSocket.OPEN) { showToast('Not connected'); return; }
   ws.send(JSON.stringify({type: 'startCalibration', index: idx}));
+}
+
+function assignSensor(busIndex) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) { showToast('Not connected'); return; }
+  if (!state || !state.calibrating) { showToast('Start calibration first'); return; }
+  ws.send(JSON.stringify({
+    type: 'assignSensor',
+    index: state.calibrate_index,
+    busIndex: busIndex
+  }));
 }
 
 function cancelCalibration() {

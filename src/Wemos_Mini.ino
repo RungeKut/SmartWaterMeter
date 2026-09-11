@@ -159,6 +159,7 @@ void fillSensorState(JsonDocument &doc) {
 
   doc["calibrating"] = tempSensors.isCalibrating();
   doc["calibrate_index"] = tempSensors.getCalibrateIndex();
+  doc["calibrate_remaining"] = tempSensors.getCalibrateRemainingSec();
 
   JsonArray sensors = doc["sensorMapping"].to<JsonArray>();
   for (int i = 0; i < NUM_SENSORS; i++) {
@@ -719,6 +720,31 @@ void handleWsMessage(AsyncWebSocketClient *client, const String &msg) {
       resp["index"] = idx;
       wsSendJson(client, resp);
     }
+  }
+  else if (strcmp(type, "assignSensor") == 0) {
+    // Ручное назначение датчика с шины на канал — альтернатива нагреву
+    int idx = doc["index"] | -1;
+    int busIdx = doc["busIndex"] | -1;
+    int displaced = -1;
+
+    JsonDocument resp;
+    resp["type"] = "assignResult";
+    if (idx < 0 || busIdx < 0 ||
+        !tempSensors.assignSensor(idx, (uint8_t)busIdx, &displaced)) {
+      resp["success"] = false;
+      resp["message"] = "Assign failed";
+    } else {
+      resp["success"] = true;
+      if (displaced >= 0) {
+        resp["message"] = String(TemperatureSensors::sensorName(idx))
+                        + " assigned, "
+                        + TemperatureSensors::sensorName(displaced)
+                        + " released";
+      } else {
+        resp["message"] = String(TemperatureSensors::sensorName(idx)) + " assigned";
+      }
+    }
+    wsSendJson(client, resp);
   }
   else if (strcmp(type, "cancelCalibration") == 0) {
     tempSensors.cancelCalibration();

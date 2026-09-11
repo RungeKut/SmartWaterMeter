@@ -38,6 +38,8 @@
 | `getDeviceCount()` | Количество датчиков на шине |
 | `startCalibration(index, cb)` | Запуск калибровки |
 | `cancelCalibration()` | Отмена калибровки |
+| `assignSensor(index, busIndex, &displaced)` | Ручное назначение датчика с шины на канал. Снимает дублирующее назначение с другого канала и возвращает его индекс через `displaced`. Если для канала шла калибровка — завершает её успехом |
+| `getCalibrateRemainingSec()` | Секунд до таймаута калибровки |
 | `isCalibrating()` | Активна ли калибровка |
 | `getAllAddrCount()` | Количество устройств в `_allAddrs[]` |
 | `getAllAddr(i)` | Адрес устройства i на шине |

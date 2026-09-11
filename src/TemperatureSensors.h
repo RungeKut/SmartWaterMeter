@@ -27,7 +27,7 @@
 #define NUM_SENSORS 4
 #define MAX_BUS_DEVICES 16
 #define CALIBRATE_THRESHOLD 5.0
-#define CALIBRATE_TIMEOUT 60000
+#define CALIBRATE_TIMEOUT 300000   // 5 минут на нагрев датчика
 
 // Сколько подряд неудачных чтений терпим, прежде чем показать N/D.
 // Одиночный сбой CRC на шине OneWire — обычное дело (длинные провода,
@@ -266,6 +266,64 @@ public:
 
     Log.printf("[CALIBRATE] Started for %s. Heat by >%.1f C within %ds\n",
       sensorName(sensorIndex), CALIBRATE_THRESHOLD, CALIBRATE_TIMEOUT / 1000);
+  }
+
+  // Сколько секунд осталось до таймаута калибровки
+  uint32_t getCalibrateRemainingSec() {
+    if (!_calibrating) return 0;
+    uint32_t elapsed = millis() - _calibrateStartTime;
+    if (elapsed >= CALIBRATE_TIMEOUT) return 0;
+    return (CALIBRATE_TIMEOUT - elapsed) / 1000;
+  }
+
+  // Ручное назначение датчика с шины на логический канал — альтернатива
+  // нагреву. Нужна, когда датчик недоступен физически или нагреть его
+  // на 5 градусов затруднительно.
+  //
+  // displacedChannel (если передан) получает индекс канала, с которого
+  // снято дублирующее назначение, либо -1. Дубликаты недопустимы:
+  // findMapping() вернул бы для одного адреса только младший канал, и
+  // второй после перезагрузки молча стал бы Missing.
+  bool assignSensor(int sensorIndex, uint8_t busIndex, int *displacedChannel = nullptr) {
+    if (displacedChannel) *displacedChannel = -1;
+    if (sensorIndex < 0 || sensorIndex >= NUM_SENSORS) return false;
+    if (busIndex >= _allAddrsCount) return false;
+
+    // Снимаем этот адрес с другого канала, если он там уже стоит
+    for (int i = 0; i < NUM_SENSORS; i++) {
+      if (i == sensorIndex) continue;
+      if (memcmp(_expectedAddrs[i], _allAddrs[busIndex], 8) == 0) {
+        memset(_expectedAddrs[i], 0, 8);
+        _found[i] = false;
+        _temperatures[i] = DEVICE_DISCONNECTED_C;
+        if (_config) {
+          uint8_t zero[8] = {0};
+          _config->setSensorAddr(i, zero);
+        }
+        if (displacedChannel) *displacedChannel = i;
+        Log.printf("[CALIBRATE] %s released — same sensor moved to %s\n",
+          sensorName(i), sensorName(sensorIndex));
+      }
+    }
+
+    memcpy(_expectedAddrs[sensorIndex], _allAddrs[busIndex], 8);
+    _found[sensorIndex] = true;
+    _temperatures[sensorIndex] = _busTemps[busIndex];
+    if (_config) _config->setSensorAddr(sensorIndex, _allAddrs[busIndex]);
+
+    Log.printf("[CALIBRATE] Bus[%d] assigned to %s manually\n",
+      busIndex, sensorName(sensorIndex));
+
+    // Если для этого канала шла калибровка — завершаем её успехом
+    if (_calibrating && _calibrateIndex == sensorIndex) {
+      _calibrating = false;
+      _calibrateBaseReady = false;
+      CalibrateCallback cb = _calibrateCb;
+      _calibrateCb = nullptr;
+      _calibrateIndex = -1;
+      if (cb) cb(sensorIndex, true);
+    }
+    return true;
   }
 
   void cancelCalibration() {
