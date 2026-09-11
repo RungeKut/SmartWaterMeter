@@ -55,7 +55,9 @@
     "meterHotM3": 123.456,
     "meterColdM3": 789.012,
     "litersPerPulseHot": 1.0,
-    "litersPerPulseCold": 1.0
+    "litersPerPulseCold": 1.0,
+    "debounceClosedMs": 0,
+    "debounceOpenMs": 0
   },
   "sensorMapping": [
     { "name": "Cold", "found": true, "temp": 22.5 },
@@ -179,6 +181,8 @@
 
 Пустые `wifiPass` / `smtpPass` означают «оставить сохранённый пароль», а не «стереть». Поля `config` обязательны: сообщение без объекта `config` отбрасывается с ответом `success: false`.
 
+`debounceClosedMs` / `debounceOpenMs` — пороги антидребезга герконов в миллисекундах; `0` означает «взять значения по умолчанию» (5 и 50 мс). `deviceName` пустой — вернуться к имени по MAC.
+
 ```json
 {
   "type": "saveConfig",
@@ -198,7 +202,9 @@
     "meterHotM3": 123.456,
     "meterColdM3": 789.012,
     "litersPerPulseHot": 1.0,
-    "litersPerPulseCold": 1.0
+    "litersPerPulseCold": 1.0,
+    "debounceClosedMs": 0,
+    "debounceOpenMs": 0
   }
 }
 ```
