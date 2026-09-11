@@ -81,7 +81,9 @@
 |---------|----------|
 | `/` (static) | SPA из LittleFS |
 | `/api.json` | JSON: температуры, счётчики, статус |
-| `/metrics` | Prometheus-метрики |
+| `/metrics` | Prometheus-метрики (см. README, раздел Prometheus) |
+
+Отсутствующий датчик в `/api.json` отдаётся как `null`, а в `/metrics` не экспортируется вовсе — см. [pitfalls.md §21](../pitfalls.md).
 | `/confirm` | Подтверждение прошивки после OTA (GET из браузера) |
 
 ## WiFi: реконнект

@@ -109,6 +109,7 @@ void keepOrSet(char *dst, JsonVariantConst src, size_t dstSize);
 void fillSystemState(JsonDocument &doc);
 void fillSensorState(JsonDocument &doc);
 void sanitizeDeviceName(const char *src, size_t srcSize, char *dst, size_t dstSize);
+String jsonTemp(float t);
 void applyDeviceName();
 
 // ==================== Helpers ====================
@@ -121,6 +122,15 @@ void keepOrSet(char *dst, JsonVariantConst src, size_t dstSize) {
   if (val != nullptr && val[0] != '\0') {
     strlcpy(dst, val, dstSize);
   }
+}
+
+// Температура для JSON. Отсутствующий датчик отдаётся как null, а не
+// как -127: DEVICE_DISCONNECTED_C — это признак «нет данных», а не
+// измерение. Иначе Home Assistant показывал бы -127 °C, а Prometheus
+// клал бы эту точку в графики и портил средние и алерты.
+String jsonTemp(float t) {
+  if (t == DEVICE_DISCONNECTED_C || t < -50) return "null";
+  return String(t, 1);
 }
 
 // Приводит имя к виду, пригодному для hostname: латиница, цифры, дефис.
@@ -846,10 +856,10 @@ void setupHttpRoutes() {
                                        : WiFi.localIP().toString()) + "\",";
     json += "\"time_valid\":" + String(timeValid ? "true" : "false") + ",";
     json += "\"temperatures\":{";
-    json += "\"cold\":" + String(tempSensors.getTempHVS(), 1) + ",";
-    json += "\"hot\":" + String(tempSensors.getTempGVS(), 1) + ",";
-    json += "\"supply\":" + String(tempSensors.getTempSupply(), 1) + ",";
-    json += "\"return\":" + String(tempSensors.getTempReturn(), 1);
+    json += "\"cold\":" + jsonTemp(tempSensors.getTempHVS()) + ",";
+    json += "\"hot\":" + jsonTemp(tempSensors.getTempGVS()) + ",";
+    json += "\"supply\":" + jsonTemp(tempSensors.getTempSupply()) + ",";
+    json += "\"return\":" + jsonTemp(tempSensors.getTempReturn());
     json += "},";
     json += "\"meters\":{";
     json += "\"hot_m3\":" + String(config.data.meterHotM3, 3) + ",";
@@ -873,29 +883,72 @@ void setupHttpRoutes() {
   // Prometheus metrics
   server.on("/metrics", HTTP_GET, [](AsyncWebServerRequest *request) {
     String body;
-    body += "# HELP smartwatermeter_temperature Temperature sensors\n";
-    body += "# TYPE smartwatermeter_temperature gauge\n";
-    body += "smartwatermeter_temperature{sensor=\"cold\"} " + String(tempSensors.getTempHVS(), 1) + "\n";
-    body += "smartwatermeter_temperature{sensor=\"hot\"} " + String(tempSensors.getTempGVS(), 1) + "\n";
-    body += "smartwatermeter_temperature{sensor=\"supply\"} " + String(tempSensors.getTempSupply(), 1) + "\n";
-    body += "smartwatermeter_temperature{sensor=\"return\"} " + String(tempSensors.getTempReturn(), 1) + "\n";
-    body += "# HELP smartwatermeter_meter Water meter readings in m3\n";
-    body += "# TYPE smartwatermeter_meter gauge\n";
-    body += "smartwatermeter_meter{type=\"hot\"} " + String(config.data.meterHotM3, 3) + "\n";
-    body += "smartwatermeter_meter{type=\"cold\"} " + String(config.data.meterColdM3, 3) + "\n";
+
+    // Отсутствующий датчик не экспортируется вовсе. Отдать -127 означало
+    // бы положить в график настоящую точку и испортить средние и алерты;
+    // в Prometheus отсутствие серии — штатный способ сказать «данных нет».
+    body += "# HELP smartwatermeter_temperature_celsius Temperature sensors\n";
+    body += "# TYPE smartwatermeter_temperature_celsius gauge\n";
+    const char* tNames[4] = { "cold", "hot", "supply", "return" };
+    float tVals[4] = {
+      tempSensors.getTempHVS(), tempSensors.getTempGVS(),
+      tempSensors.getTempSupply(), tempSensors.getTempReturn()
+    };
+    for (int i = 0; i < 4; i++) {
+      if (tVals[i] == DEVICE_DISCONNECTED_C || tVals[i] < -50) continue;
+      body += "smartwatermeter_temperature_celsius{sensor=\"";
+      body += tNames[i];
+      body += "\"} " + String(tVals[i], 1) + "\n";
+    }
+
+    // Показания счётчиков монотонно растут — это counter, а не gauge.
+    // Только с типом counter имеют смысл rate() и increase(), то есть
+    // расход за час или за сутки.
+    body += "# HELP smartwatermeter_water_m3_total Total water consumption\n";
+    body += "# TYPE smartwatermeter_water_m3_total counter\n";
+    body += "smartwatermeter_water_m3_total{type=\"hot\"} " + String(config.data.meterHotM3, 3) + "\n";
+    body += "smartwatermeter_water_m3_total{type=\"cold\"} " + String(config.data.meterColdM3, 3) + "\n";
+
+    // Аптайм — gauge: он сбрасывается при перезагрузке
     body += "# HELP smartwatermeter_uptime_seconds System uptime\n";
-    body += "# TYPE smartwatermeter_uptime_seconds counter\n";
+    body += "# TYPE smartwatermeter_uptime_seconds gauge\n";
     body += "smartwatermeter_uptime_seconds " + String(millis() / 1000) + "\n";
+
     body += "# HELP smartwatermeter_free_heap_bytes Free heap memory\n";
     body += "# TYPE smartwatermeter_free_heap_bytes gauge\n";
     body += "smartwatermeter_free_heap_bytes " + String(ESP.getFreeHeap()) + "\n";
-    body += "# HELP smartwatermeter_wifi_rssi WiFi signal strength\n";
-    body += "# TYPE smartwatermeter_wifi_rssi gauge\n";
-    body += "smartwatermeter_wifi_rssi " + String(wifiConnected ? WiFi.RSSI() : 0) + "\n";
+
+    // RSSI имеет смысл только в режиме клиента
+    if (wifiConnected) {
+      body += "# HELP smartwatermeter_wifi_rssi_dbm WiFi signal strength\n";
+      body += "# TYPE smartwatermeter_wifi_rssi_dbm gauge\n";
+      body += "smartwatermeter_wifi_rssi_dbm " + String(WiFi.RSSI()) + "\n";
+    }
+
+    body += "# HELP smartwatermeter_sensor_present Sensor is currently readable\n";
+    body += "# TYPE smartwatermeter_sensor_present gauge\n";
+    // Метки в нижнем регистре — те же значения, что у температур,
+    // иначе серии не соединить по sensor в PromQL.
+    // Порядок каналов: [0]=Cold, [1]=Hot, [2]=Return, [3]=Supply
+    const char* chNames[NUM_SENSORS] = { "cold", "hot", "return", "supply" };
+    for (int i = 0; i < NUM_SENSORS; i++) {
+      body += "smartwatermeter_sensor_present{sensor=\"";
+      body += chNames[i];
+      body += "\"} ";
+      body += tempSensors.isFound(i) ? "1" : "0";
+      body += "\n";
+    }
+
+    body += "# HELP smartwatermeter_reed_closed Reed switch is currently closed\n";
+    body += "# TYPE smartwatermeter_reed_closed gauge\n";
+    body += "smartwatermeter_reed_closed{type=\"hot\"} " + String(meterHot.isClosed() ? 1 : 0) + "\n";
+    body += "smartwatermeter_reed_closed{type=\"cold\"} " + String(meterCold.isClosed() ? 1 : 0) + "\n";
+
     body += "# HELP smartwatermeter_calibrating Whether calibration is in progress\n";
     body += "# TYPE smartwatermeter_calibrating gauge\n";
     body += "smartwatermeter_calibrating " + String(tempSensors.isCalibrating() ? "1" : "0") + "\n";
-    request->send(200, "text/plain; charset=utf-8", body);
+
+    request->send(200, "text/plain; version=0.0.4; charset=utf-8", body);
   });
 }
 

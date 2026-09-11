@@ -128,7 +128,7 @@ GET http://<ip>/api.json
   "time_valid": true,
   "temperatures": {
     "cold": 22.5, "hot": 55.3,
-    "supply": 60.1, "return": 45.2
+    "supply": 60.1, "return": null
   },
   "meters": {
     "hot_m3": 103.000, "cold_m3": 127.000
@@ -137,21 +137,113 @@ GET http://<ip>/api.json
 }
 ```
 
-### Home Assistant (RESTful sensor)
+> Отсутствующий датчик отдаётся как `null`, а не как `-127`. `DEVICE_DISCONNECTED_C` — это признак «нет данных», а не измерение: иначе Home Assistant показывал бы -127 °C, а Prometheus клал бы эту точку в графики.
+
+### Home Assistant
+
+Один запрос к устройству на все значения — интеграция `rest` умеет отдавать несколько сенсоров из одного ответа. Вариант «по сенсору на запрос» создавал бы шесть HTTP-запросов к ESP каждый интервал.
 
 ```yaml
-sensor:
-  - platform: rest
-    name: "Water Meter Hot"
-    resource: http://192.168.88.89/api.json
-    value_template: "{{ value_json.meters.hot_m3 }}"
-    unit_of_measurement: "m3"
-  - platform: rest
-    name: "Water Temperature Hot"
-    resource: http://192.168.88.89/api.json
-    value_template: "{{ value_json.temperatures.hot }}"
-    unit_of_measurement: "°C"
+# configuration.yaml
+rest:
+  - resource: http://192.168.88.87/api.json
+    scan_interval: 30
+    sensor:
+      - name: "Вода ГВС"
+        unique_id: swm_water_hot
+        value_template: "{{ value_json.meters.hot_m3 }}"
+        unit_of_measurement: "m³"
+        device_class: water
+        state_class: total_increasing
+
+      - name: "Вода ХВС"
+        unique_id: swm_water_cold
+        value_template: "{{ value_json.meters.cold_m3 }}"
+        unit_of_measurement: "m³"
+        device_class: water
+        state_class: total_increasing
+
+      - name: "Температура ХВС"
+        unique_id: swm_temp_cold
+        value_template: "{{ value_json.temperatures.cold }}"
+        unit_of_measurement: "°C"
+        device_class: temperature
+        state_class: measurement
+        availability: "{{ value_json.temperatures.cold is not none }}"
+
+      - name: "Температура ГВС"
+        unique_id: swm_temp_hot
+        value_template: "{{ value_json.temperatures.hot }}"
+        unit_of_measurement: "°C"
+        device_class: temperature
+        state_class: measurement
+        availability: "{{ value_json.temperatures.hot is not none }}"
+
+      - name: "Подача отопления"
+        unique_id: swm_temp_supply
+        value_template: "{{ value_json.temperatures.supply }}"
+        unit_of_measurement: "°C"
+        device_class: temperature
+        state_class: measurement
+        availability: "{{ value_json.temperatures.supply is not none }}"
+
+      - name: "Обратка отопления"
+        unique_id: swm_temp_return
+        value_template: "{{ value_json.temperatures.return }}"
+        unit_of_measurement: "°C"
+        device_class: temperature
+        state_class: measurement
+        availability: "{{ value_json.temperatures.return is not none }}"
 ```
+
+Что здесь важно:
+
+- **`device_class: water` + `state_class: total_increasing`** — без них счётчики не попадут в панель «Вода» в Home Assistant. Именно эта пара делает из числа полноценный учётный счётчик с историей потребления.
+- **`availability`** — отсутствующий датчик приходит как `null`, и сенсор корректно переходит в состояние «недоступен» вместо того, чтобы показывать мусор.
+- **`unique_id`** — без него сенсор нельзя переименовать или привязать к устройству через интерфейс.
+- **`scan_interval: 30`** — устройство обновляет данные раз в секунду, но опрашивать его чаще, чем раз в 15-30 секунд, незачем: на каждый запрос тратится память ESP.
+
+### Prometheus
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: smartwatermeter
+    scrape_interval: 30s
+    static_configs:
+      - targets: ['192.168.88.87']
+```
+
+Экспортируемые метрики:
+
+| Метрика | Тип | Описание |
+|---------|-----|----------|
+| `smartwatermeter_temperature_celsius{sensor}` | gauge | Температуры. Отсутствующий датчик **не экспортируется** |
+| `smartwatermeter_water_m3_total{type}` | counter | Показания счётчиков, м³ |
+| `smartwatermeter_sensor_present{sensor}` | gauge | 1 = датчик читается |
+| `smartwatermeter_reed_closed{type}` | gauge | 1 = геркон сейчас замкнут |
+| `smartwatermeter_uptime_seconds` | gauge | Аптайм |
+| `smartwatermeter_free_heap_bytes` | gauge | Свободная память |
+| `smartwatermeter_wifi_rssi_dbm` | gauge | Уровень сигнала (только в режиме клиента) |
+| `smartwatermeter_calibrating` | gauge | 1 = идёт калибровка |
+
+Метки `sensor` — `cold`, `hot`, `supply`, `return`; метки `type` — `hot`, `cold`.
+
+Примеры запросов:
+
+```promql
+# расход горячей воды за сутки, м³
+increase(smartwatermeter_water_m3_total{type="hot"}[24h])
+
+# датчик пропал с шины дольше 5 минут
+min_over_time(smartwatermeter_sensor_present[5m]) == 0
+
+# дельта отопления
+smartwatermeter_temperature_celsius{sensor="supply"}
+  - on() smartwatermeter_temperature_celsius{sensor="return"}
+```
+
+Отсутствующий датчик не экспортируется вовсе — это штатный для Prometheus способ сказать «данных нет». Экспорт `-127` положил бы в график настоящую точку и испортил бы средние и алерты.
 
 ## OTA-обновление
 
