@@ -62,6 +62,7 @@ AsyncWebSocket ws("/ws");
 
 char apSSID[32];
 char deviceName[32];
+char defaultDeviceName[32];   // SmartWaterMeter-XXXXXX по MAC
 
 time_t epochTime;
 struct tm *ptm = nullptr;
@@ -107,6 +108,8 @@ void setupHttpRoutes();
 void keepOrSet(char *dst, JsonVariantConst src, size_t dstSize);
 void fillSystemState(JsonDocument &doc);
 void fillSensorState(JsonDocument &doc);
+void sanitizeDeviceName(const char *src, size_t srcSize, char *dst, size_t dstSize);
+void applyDeviceName();
 
 // ==================== Helpers ====================
 
@@ -118,6 +121,45 @@ void keepOrSet(char *dst, JsonVariantConst src, size_t dstSize) {
   if (val != nullptr && val[0] != '\0') {
     strlcpy(dst, val, dstSize);
   }
+}
+
+// Приводит имя к виду, пригодному для hostname: латиница, цифры, дефис.
+// Пробелы, точки и подчёркивания становятся дефисом, всё остальное
+// (включая кириллицу) отбрасывается. Дефисы по краям убираются.
+//
+// srcSize обязателен: поле в EEPROM может не содержать терминатора —
+// в байтах за прежним размером структуры лежит 0xFF.
+void sanitizeDeviceName(const char *src, size_t srcSize, char *dst, size_t dstSize) {
+  size_t j = 0;
+  for (size_t i = 0; i < srcSize && src[i] != '\0' && j + 1 < dstSize; i++) {
+    char c = src[i];
+    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+      dst[j++] = c;
+    } else if (c == '-' || c == '_' || c == ' ' || c == '.') {
+      if (j > 0 && dst[j - 1] != '-') dst[j++] = '-';
+    }
+  }
+  while (j > 0 && dst[j - 1] == '-') j--;
+  dst[j] = '\0';
+}
+
+// Имя из EEPROM, иначе сгенерированное по MAC.
+// Заодно чистит сохранённое значение: при первой загрузке после
+// расширения структуры там лежит мусор из неинициализированной flash.
+void applyDeviceName() {
+  char clean[sizeof(config.data.deviceName)];
+  sanitizeDeviceName(config.data.deviceName, sizeof(config.data.deviceName),
+                     clean, sizeof(clean));
+  strlcpy(config.data.deviceName, clean, sizeof(config.data.deviceName));
+
+  if (clean[0] != '\0') {
+    strlcpy(deviceName, clean, sizeof(deviceName));
+  } else {
+    strlcpy(deviceName, defaultDeviceName, sizeof(deviceName));
+  }
+  // Точка доступа называется так же — иначе устройство пришлось бы
+  // искать в сети под двумя разными именами
+  strlcpy(apSSID, deviceName, sizeof(apSSID));
 }
 
 // Системная телеметрия — одинаковая в fullState и в периодическом sensors,
@@ -210,13 +252,12 @@ void setup() {
   // Unique device name from MAC
   uint8_t mac[6];
   WiFi.macAddress(mac);
-  snprintf(apSSID, sizeof(apSSID), "%s-%02X%02X%02X",
+  snprintf(defaultDeviceName, sizeof(defaultDeviceName), "%s-%02X%02X%02X",
     AP_SSID_PREFIX, mac[3], mac[4], mac[5]);
-  snprintf(deviceName, sizeof(deviceName), "%s-%02X%02X%02X",
-    AP_SSID_PREFIX, mac[3], mac[4], mac[5]);
-  Log.printf("\n\n=== %s ===\n", deviceName);
 
   config.begin();
+  applyDeviceName();   // имя из EEPROM, иначе сгенерированное по MAC
+  Log.printf("\n\n=== %s ===\n", deviceName);
   tempSensors.begin();
 
   // Check all sensors present
@@ -284,6 +325,14 @@ void setup() {
   setupHttpRoutes();
   server.begin();
 
+  // mDNS: устройство доступно как http://<имя>.local
+  if (MDNS.begin(deviceName)) {
+    MDNS.addService("http", "tcp", 80);
+    Log.printf("[mDNS] http://%s.local\n", deviceName);
+  } else {
+    Log.println("[mDNS] start failed");
+  }
+
   if (!wifiConnected) {
     startAPMode();
   } else {
@@ -303,6 +352,7 @@ void loop() {
   ArduinoOTA.handle();
   telnet.handle();
   failsafe.handle();
+  MDNS.update();
   ws.cleanupClients();
 
   uint32_t now = millis();
@@ -488,6 +538,7 @@ void WiFiupd() {
       delay(100);
       WiFi.mode(WIFI_STA);
       WiFi.setSleepMode(WIFI_NONE_SLEEP);
+      WiFi.hostname(deviceName);   // иначе после реконнекта роутер видит имя по умолчанию
       if (strlen(config.data.wifiSSID) > 0) {
         WiFi.begin(config.data.wifiSSID, config.data.wifiPass);
         int attempts = 0;
@@ -536,6 +587,7 @@ void WiFiupd() {
       delay(100);
       WiFi.mode(WIFI_STA);
       WiFi.setSleepMode(WIFI_NONE_SLEEP);
+      WiFi.hostname(deviceName);
       WiFi.begin(config.data.wifiSSID, config.data.wifiPass);
       int attempts = 0;
       while (attempts < 40) {
@@ -603,6 +655,8 @@ void sendFullState(AsyncWebSocketClient *client) {
   cfg["litersPerPulseCold"] = config.data.litersPerPulseCold;
   cfg["debounceClosedMs"] = config.data.debounceClosedMs;
   cfg["debounceOpenMs"] = config.data.debounceOpenMs;
+  cfg["deviceName"] = config.data.deviceName;      // пустое = имя по MAC
+  cfg["defaultDeviceName"] = defaultDeviceName;
   // Пароли (wifiPass/smtpPass) намеренно не отдаём клиенту
 
   // Диагностика герконов. Кладём только в fullState (раз в 30 с по
@@ -680,6 +734,13 @@ void handleWsMessage(AsyncWebSocketClient *client, const String &msg) {
     // 0 = значения по умолчанию из MeterCounter.h
     config.data.debounceClosedMs = cfg["debounceClosedMs"] | 0;
     config.data.debounceOpenMs = cfg["debounceOpenMs"] | 0;
+
+    // Имя устройства: чистим до пригодного для hostname.
+    // Пустое значение = вернуться к имени по MAC.
+    const char *nm = cfg["deviceName"] | "";
+    char cleanName[sizeof(config.data.deviceName)];
+    sanitizeDeviceName(nm, strlen(nm), cleanName, sizeof(cleanName));
+    strlcpy(config.data.deviceName, cleanName, sizeof(config.data.deviceName));
 
     config.save();
     needsRestart = true;

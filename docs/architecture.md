@@ -84,8 +84,9 @@ A/B-слотов нет. OTA пишет образ во временную об�
 ## Процесс загрузки (setup)
 
 1. Serial (115200 бод) + LED (3 вспышки)
-2. Формирование имени устройства по MAC: `SmartWaterMeter-XXXXXX`
+2. Формирование имени по умолчанию из MAC: `SmartWaterMeter-XXXXXX`
 3. ConfigStore::begin() — загрузка из EEPROM
+3a. applyDeviceName() — имя из EEPROM, иначе по MAC
 4. TemperatureSensors::begin() — инициализация DS18B20
 5. MeterCounter::begin() — инициализация счётчиков
 6. connectToWiFi() / startAPMode()

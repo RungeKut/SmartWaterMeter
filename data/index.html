@@ -266,6 +266,18 @@ label { font-size: 12px; color: var(--text-secondary); display: block; margin-bo
 
 <!-- ======== SETTINGS ======== -->
 <div id="tab-settings" class="tab-content">
+  <div class="section-title">Device</div>
+  <div class="card">
+    <label>Device name</label>
+    <input id="cfgDeviceName" type="text" maxlength="31" placeholder="SmartWaterMeter-XXXXXX">
+    <div style="font-size:12px;color:var(--text-secondary)">
+      Used as the DHCP hostname (visible on your router), the mDNS name
+      (<span id="mdnsHint">name</span>.local) and the access point SSID.
+      Latin letters, digits and hyphens only — spaces become hyphens,
+      anything else is dropped. Leave empty to use the MAC-based default.
+    </div>
+  </div>
+
   <div class="section-title">WiFi</div>
   <div class="card">
     <label>SSID</label><input id="cfgSSID" placeholder="WiFi SSID">
@@ -548,6 +560,12 @@ function formatUptime(sec) {
 function updateSettings() {
   if (!state || !state.config) return;
   const cfg = state.config;
+  const dn = document.getElementById('cfgDeviceName');
+  dn.value = cfg.deviceName || '';
+  if (cfg.defaultDeviceName) dn.placeholder = cfg.defaultDeviceName;
+  document.getElementById('mdnsHint').textContent =
+    (cfg.deviceName || cfg.defaultDeviceName || 'name');
+
   document.getElementById('cfgSSID').value = cfg.wifiSSID || '';
   document.getElementById('cfgSmtpHost').value = cfg.smtpHost || '';
   document.getElementById('cfgSmtpPort').value = cfg.smtpPort || 465;
@@ -633,6 +651,7 @@ document.getElementById('cfgReportSchedule').addEventListener('change', function
 
 function getConfig() {
   return {
+    deviceName: document.getElementById('cfgDeviceName').value,
     wifiSSID: document.getElementById('cfgSSID').value,
     wifiPass: document.getElementById('cfgPass').value,
     smtpHost: document.getElementById('cfgSmtpHost').value,

@@ -41,6 +41,8 @@
   "calibrating": false,
   "calibrate_index": -1,
   "config": {
+    "deviceName": "",
+    "defaultDeviceName": "SmartWaterMeter-93C195",
     "wifiSSID": "MyWiFi",
     "smtpHost": "smtp.yandex.ru",
     "smtpPort": 465,
@@ -182,6 +184,7 @@
   "type": "saveConfig",
   "config": {
     "wifiSSID": "MyWiFi",
+    "deviceName": "kotelnaya-schetchik",
     "wifiPass": "password",
     "smtpHost": "smtp.yandex.ru",
     "smtpPort": 465,
