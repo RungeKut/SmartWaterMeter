@@ -20,6 +20,7 @@
   "wifi_rssi": -65,
   "ap_mode": false,
   "ap_ssid": "SmartWaterMeter-93C195",
+  "ip": "192.168.88.87",
   "time_valid": true,
   "time_hour": 14,
   "time_min": 30,
@@ -69,23 +70,41 @@
 }
 ```
 
+> **Пароли не передаются.** В `config` нет `wifiPass` и `smtpPass` — устройство их не отдаёт.
+
 ### `sensors`
 
-Периодическое обновление (каждые ~5 секунд).
+Периодическое обновление (каждые ~2 секунды, при калибровке ~1 секунда).
+
+Содержит **те же поля, что и `fullState`, кроме `config`**: помимо датчиков шлётся системная телеметрия, иначе uptime, heap, время и IP на Dashboard замирали бы до переподключения.
 
 ```json
 {
   "type": "sensors",
+  "device": "SmartWaterMeter-93C195",
+  "uptime_sec": 1234,
+  "free_heap": 32000,
+  "wifi": "connected",
+  "wifi_rssi": -65,
+  "ap_mode": false,
+  "ap_ssid": "SmartWaterMeter-93C195",
+  "ip": "192.168.88.87",
+  "time_valid": true,
+  "time_hour": 14, "time_min": 30, "time_sec": 5,
+  "time_year": 2026, "time_mon": 9, "time_mday": 11,
+  "ota_pending": false,
+  "ota_remaining": 0,
   "temperatures": {
-    "cold": 22.5,
-    "hot": 45.1,
-    "return": 38.2,
-    "supply": 52.0
+    "cold": 22.5, "hot": 45.1, "return": 38.2, "supply": 52.0
   },
   "meters": {
-    "hot_m3": 123.456,
-    "cold_m3": 789.012
+    "hot_m3": 123.456, "cold_m3": 789.012
   },
+  "calibrating": false,
+  "calibrate_index": -1,
+  "sensorMapping": [
+    { "name": "Cold", "found": true, "temp": 22.5 }
+  ],
   "busDevices": [
     { "index": 0, "address": "287C7C3C000000ED", "temp": 22.5 }
   ]
@@ -139,6 +158,8 @@
 ```
 
 ### `saveConfig`
+
+Пустые `wifiPass` / `smtpPass` означают «оставить сохранённый пароль», а не «стереть». Поля `config` обязательны: сообщение без объекта `config` отбрасывается с ответом `success: false`.
 
 ```json
 {
@@ -198,6 +219,6 @@
 1. Клиент подключается к `ws://<host>/ws`
 2. При `onopen` клиент отправляет `getFullState`
 3. Сервер отвечает `fullState` — вся текущая конфигурация
-4. Каждые ~5 секунд сервер шлёт `sensors` — температуры и счётчики
+4. Каждые ~2 секунды сервер шлёт `sensors` — телеметрия, температуры, счётчики и карта шины
 5. При разрыве — клиент автоматически переподключается каждые 3 секунды
 6. При переподключении — снова запрашивает `fullState`

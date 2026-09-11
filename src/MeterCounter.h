@@ -1,6 +1,7 @@
 #pragma once
 #include <Arduino.h>
-#include <ConfigStore.h>
+#include "Log.h"
+#include "ConfigStore.h"
 
 /*
  * Счётчик импульсов с геркона (водосчётчик).
@@ -12,8 +13,9 @@
  *   - Дополнительный флаг _waitingForRelease предотвращает множественный
  *     подсчёт при дребезге на замыкании
  *
- * Поток from loop(): flush() атомарно забирает накопленные импульсы
- * и сохраняет в EEPROM через ConfigStore.
+ * Поток из loop(): flush() атомарно забирает накопленные импульсы
+ * и обновляет показания в RAM. Запись в EEPROM — раз в 5 минут
+ * из loop(), чтобы не изнашивать flash.
  */
 
 class MeterCounter {
@@ -55,11 +57,11 @@ public:
     // Если пин уже LOW (геркон замкнут) — ждём RISING
     if (digitalRead(_pin) == LOW) {
       _waitingForRelease = true;
-      Serial.printf("[Meter] %s: pin LOW at boot, waiting for release\n",
+      Log.printf("[Meter] %s: pin LOW at boot, waiting for release\n",
         _isHot ? "Hot" : "Cold");
     }
 
-    Serial.printf("[Meter] %s on pin %d (CHANGE, debounce=%ums)\n",
+    Log.printf("[Meter] %s on pin %d (CHANGE, debounce=%ums)\n",
       _isHot ? "Hot" : "Cold", _pin, _debounceInterval / 1000);
   }
 
@@ -103,8 +105,10 @@ public:
     interrupts();
 
     if (count > 0 && _store) {
-      float cubePerPulse = _isHot ? _store->data.litersPerPulseHot : _store->data.litersPerPulseCold;
-      float totalM3 = count * cubePerPulse;
+      // Коэффициент задаётся в ЛИТРАХ на импульс (веб-интерфейс: "L per pulse"),
+      // а показания храним в м³ — отсюда деление на 1000.
+      float litersPerPulse = _isHot ? _store->data.litersPerPulseHot : _store->data.litersPerPulseCold;
+      float totalM3 = (count * litersPerPulse) / 1000.0f;
 
       if (_isHot) {
         _store->data.meterHotM3 += totalM3;
@@ -112,7 +116,7 @@ public:
         _store->data.meterColdM3 += totalM3;
       }
 
-      Serial.printf("[Meter] %s: +%u pulses (%.3f m3, total %.3f)\n",
+      Log.printf("[Meter] %s: +%u pulses (%.3f m3, total %.3f)\n",
         _isHot ? "Hot" : "Cold", count, totalM3,
         _isHot ? _store->data.meterHotM3 : _store->data.meterColdM3);
 

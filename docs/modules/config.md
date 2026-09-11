@@ -36,4 +36,5 @@
 | `resetDefaults()` | Сброс к значениям по умолчанию |
 | `setSensorAddr(index, addr)` | Сохранение адреса DS18B20 |
 | `getSensorAddr(index)` | Получение адреса (EEPROM или secrets.h) |
-| `saveMeters()` | Сохранение показаний счётчиков |
+
+> `saveMeters()` удалён: он побайтно повторял `save()`, и `loop()` вызывал обе функции подряд — две одинаковые записи EEPROM вместо одной.

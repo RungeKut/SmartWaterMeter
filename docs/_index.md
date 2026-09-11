@@ -33,6 +33,7 @@
 | Общая архитектура, потоки данных | `docs/architecture.md` |
 | **Модули прошивки:** | |
 | — Главный цикл (`Wemos_Mini.ino`) | `docs/modules/core-loop.md` |
+| — Логирование (`Log.h`) | `docs/modules/log.md` |
 | — Датчики DS18B20 (`TemperatureSensors.h`) | `docs/modules/sensors.md` |
 | — Счётчики воды (`MeterCounter.h`) | `docs/modules/meters.md` |
 | — Конфигурация и EEPROM (`ConfigStore.h`) | `docs/modules/config.md` |

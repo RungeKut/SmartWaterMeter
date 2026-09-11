@@ -19,6 +19,7 @@
 #include <Arduino.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
+#include "Log.h"
 
 #define NUM_SENSORS 4
 #define MAX_BUS_DEVICES 16
@@ -42,6 +43,7 @@ private:
   DeviceAddress _allAddrs[MAX_BUS_DEVICES];
   uint8_t _allAddrsCount;
   uint32_t _calibrateStartTime;
+  bool _calibrateBaseReady;
   CalibrateCallback _calibrateCb;
   class ConfigStore* _config;
 
@@ -49,18 +51,21 @@ public:
   TemperatureSensors(uint8_t oneWirePin, class ConfigStore* config = nullptr)
     : _oneWire(oneWirePin), _sensors(&_oneWire), _deviceCount(0),
       _calibrating(false), _calibrateIndex(-1),
-      _allAddrsCount(0), _calibrateStartTime(0),
+      _allAddrsCount(0), _calibrateStartTime(0), _calibrateBaseReady(false),
       _calibrateCb(nullptr), _config(config) {
     for (int i = 0; i < NUM_SENSORS; i++) {
       _temperatures[i] = DEVICE_DISCONNECTED_C;
       _found[i] = false;
+    }
+    for (int i = 0; i < MAX_BUS_DEVICES; i++) {
+      _calibrateBaseTemp[i] = DEVICE_DISCONNECTED_C;
     }
   }
 
   void begin() {
     _sensors.begin();
     _deviceCount = _sensors.getDeviceCount();
-    Serial.printf("[DS18B20] Found sensors: %d\n", _deviceCount);
+    Log.printf("[DS18B20] Found sensors: %d\n", _deviceCount);
 
     // Fill _allAddrs for calibration bus table
     _allAddrsCount = 0;
@@ -69,52 +74,31 @@ public:
       if (_sensors.getAddress(addr, i)) {
         memcpy(_allAddrs[_allAddrsCount], addr, 8);
         _allAddrsCount++;
-        Serial.printf("[DS18B20] Bus[%d]: ", i);
+        Log.printf("[DS18B20] Bus[%d]: ", i);
         for (int j = 0; j < 8; j++) {
-          Serial.printf("%02X", addr[j]);
+          Log.printf("%02X", addr[j]);
         }
-        Serial.println();
+        Log.println();
       }
     }
 
     loadExpectedAddrs();
 
-    for (uint8_t i = 0; i < _deviceCount && i < NUM_SENSORS; i++) {
-      DeviceAddress addr;
-      if (_sensors.getAddress(addr, i)) {
-        int mapped = findMapping(addr);
-        if (mapped >= 0) {
-          Serial.printf("[DS18B20] Sensor %d -> %s\n", i, sensorName(mapped));
-          _found[mapped] = true;
-        }
+    // Перебираем ВСЕ устройства на шине: искомый датчик может стоять
+    // на любой позиции, а не только среди первых NUM_SENSORS.
+    for (uint8_t i = 0; i < _allAddrsCount; i++) {
+      int mapped = findMapping(_allAddrs[i]);
+      if (mapped >= 0) {
+        Log.printf("[DS18B20] Bus[%d] -> %s\n", i, sensorName(mapped));
+        _found[mapped] = true;
       }
     }
 
     for (int i = 0; i < NUM_SENSORS; i++) {
       if (!_found[i]) {
-        Serial.printf("[DS18B20] WARNING: %s not found!\n", sensorName(i));
+        Log.printf("[DS18B20] WARNING: %s not found!\n", sensorName(i));
       }
     }
-  }
-
-  // Fast bus rescan (~5-10ms, does NOT re-init DallasTemperature)
-  // Also resets _found[] — use for calibration start only
-  void rescanBus() {
-    _allAddrsCount = 0;
-    _deviceCount = 0;
-    for (int i = 0; i < NUM_SENSORS; i++) _found[i] = false;
-
-    _oneWire.reset_search();
-    DeviceAddress addr;
-    while (_oneWire.search(addr) && _allAddrsCount < MAX_BUS_DEVICES) {
-      if (OneWire::crc8(addr, 7) == addr[7]) {
-        memcpy(_allAddrs[_allAddrsCount], addr, 8);
-        int mapped = findMapping(addr);
-        if (mapped >= 0) _found[mapped] = true;
-        _allAddrsCount++;
-      }
-    }
-    _deviceCount = _allAddrsCount;
   }
 
   // Lightweight bus rescan — only refreshes _allAddrs[] for calibration bus table,
@@ -135,7 +119,7 @@ public:
     }
     _deviceCount = _allAddrsCount;
 
-    Serial.printf("[DS18B20] light rescan: %d devices on bus\n", _allAddrsCount);
+    Log.printf("[DS18B20] light rescan: %d devices on bus\n", _allAddrsCount);
   }
 
   // Start async temperature conversion (~750ms on 12-bit resolution)
@@ -154,10 +138,15 @@ public:
     }
 
     if (_calibrating) {
-      if (_calibrateBaseTemp[0] == DEVICE_DISCONNECTED_C) {
+      // Базовые температуры снимаем один раз — на первом чтении после
+      // старта калибровки. Явный флаг вместо проверки _calibrateBaseTemp[0]:
+      // если устройство 0 отключено, оно навсегда возвращает -127 и
+      // базовые температуры переснимались бы каждый цикл.
+      if (!_calibrateBaseReady) {
         for (uint8_t i = 0; i < _allAddrsCount; i++) {
           _calibrateBaseTemp[i] = _sensors.getTempC(_allAddrs[i]);
         }
+        _calibrateBaseReady = true;
       }
       checkCalibration();
     }
@@ -192,15 +181,14 @@ public:
     if (sensorIndex < 0 || sensorIndex >= NUM_SENSORS) return;
     if (_calibrating) return;
 
-    _allAddrsCount = 0;
-    for (uint8_t i = 0; i < _deviceCount && i < MAX_BUS_DEVICES; i++) {
-      if (_sensors.getAddress(_allAddrs[_allAddrsCount], i)) {
-        _allAddrsCount++;
-      }
-    }
+    // Актуализируем список шины ДО снятия базовых температур.
+    // Порядок важен: если рескан произойдёт позже, _allAddrsCount
+    // вырастет, а базовые температуры для новых индексов останутся
+    // неинициализированными — в таблице появлялись мусорные дельты.
+    rescanBusLight();
 
     if (_allAddrsCount == 0) {
-      Serial.println("[CALIBRATE] No sensors on bus!");
+      Log.println("[CALIBRATE] No sensors on bus!");
       if (cb) cb(sensorIndex, false);
       return;
     }
@@ -209,18 +197,21 @@ public:
     _calibrateIndex = sensorIndex;
     _calibrateCb = cb;
     _calibrateStartTime = millis();
-    for (uint8_t i = 0; i < _allAddrsCount; i++) {
+    _calibrateBaseReady = false;
+    // Инициализируем ВЕСЬ массив, а не только _allAddrsCount элементов
+    for (uint8_t i = 0; i < MAX_BUS_DEVICES; i++) {
       _calibrateBaseTemp[i] = DEVICE_DISCONNECTED_C;
     }
 
-    Serial.printf("[CALIBRATE] Started for %s. Heat by >%.1f C within %ds\n",
+    Log.printf("[CALIBRATE] Started for %s. Heat by >%.1f C within %ds\n",
       sensorName(sensorIndex), CALIBRATE_THRESHOLD, CALIBRATE_TIMEOUT / 1000);
   }
 
   void cancelCalibration() {
     if (!_calibrating) return;
     _calibrating = false;
-    Serial.println("[CALIBRATE] Cancelled");
+    _calibrateBaseReady = false;
+    Log.println("[CALIBRATE] Cancelled");
     if (_calibrateCb) _calibrateCb(_calibrateIndex, false);
     _calibrateCb = nullptr;
     _calibrateIndex = -1;
@@ -249,7 +240,7 @@ public:
     return s;
   }
 
-  void refreshAddrList() { rescanBus(); }
+  void refreshAddrList() { rescanBusLight(); }
 
   static String formatTemp(float temp) {
     if (isnan(temp) || temp < -50.0f) return "N/D";
@@ -267,7 +258,7 @@ public:
   }
 
   float getCalibrateDelta(uint8_t busIndex) {
-    if (busIndex >= _allAddrsCount) return DEVICE_DISCONNECTED_C;
+    if (busIndex >= _allAddrsCount || !_calibrateBaseReady) return 0;
     float current = getRawTemp(busIndex);
     float base = _calibrateBaseTemp[busIndex];
     if (current == DEVICE_DISCONNECTED_C || base == DEVICE_DISCONNECTED_C) return 0;
@@ -288,15 +279,15 @@ private:
       }
       if (useEeprom) {
         memcpy(_expectedAddrs[i], _config->data.sensorAddrs[i], 8);
-        Serial.printf("[DS18B20] [%d] EEPROM: ", i);
+        Log.printf("[DS18B20] [%d] EEPROM: ", i);
       } else {
         memcpy(_expectedAddrs[i], SENSOR_ADDR[i], 8);
-        Serial.printf("[DS18B20] [%d] secrets: ", i);
+        Log.printf("[DS18B20] [%d] secrets: ", i);
       }
       for (int j = 0; j < 8; j++) {
-        Serial.printf("%02X", _expectedAddrs[i][j]);
+        Log.printf("%02X", _expectedAddrs[i][j]);
       }
-      Serial.println();
+      Log.println();
     }
 
     // After initial mapping, re-check each EEPROM address individually:
@@ -312,21 +303,18 @@ private:
       }
       if (isFromEeprom && !_found[i]) {
         // EEPROM address didn't match — try secrets.h
-        Serial.printf("[DS18B20] [%d] EEPROM addr not found, trying secrets.h...\n", i);
+        Log.printf("[DS18B20] [%d] EEPROM addr not found, trying secrets.h...\n", i);
         memcpy(_expectedAddrs[i], SENSOR_ADDR[i], 8);
         // Remap with new address
-        for (uint8_t di = 0; di < _deviceCount && di < NUM_SENSORS; di++) {
-          DeviceAddress addr;
-          if (_sensors.getAddress(addr, di)) {
-            if (memcmp(addr, _expectedAddrs[i], 8) == 0) {
-              _found[i] = true;
-              Serial.printf("[DS18B20] [%d] Found with secrets.h address!\n", i);
-              break;
-            }
+        for (uint8_t di = 0; di < _allAddrsCount; di++) {
+          if (memcmp(_allAddrs[di], _expectedAddrs[i], 8) == 0) {
+            _found[i] = true;
+            Log.printf("[DS18B20] [%d] Found with secrets.h address!\n", i);
+            break;
           }
         }
         if (!_found[i]) {
-          Serial.printf("[DS18B20] [%d] Still not found with secrets.h either\n", i);
+          Log.printf("[DS18B20] [%d] Still not found with secrets.h either\n", i);
         }
         eepromChanged = true;
       }
@@ -338,7 +326,7 @@ private:
         memcpy(_config->data.sensorAddrs[i], _expectedAddrs[i], 8);
       }
       _config->save();
-      Serial.println("[DS18B20] EEPROM addresses updated from secrets.h");
+      Log.println("[DS18B20] EEPROM addresses updated from secrets.h");
     }
   }
 
@@ -346,7 +334,7 @@ private:
     uint32_t elapsed = millis() - _calibrateStartTime;
 
     if (elapsed > CALIBRATE_TIMEOUT) {
-      Serial.println("[CALIBRATE] Timeout!");
+      Log.println("[CALIBRATE] Timeout!");
       _calibrating = false;
       if (_calibrateCb) _calibrateCb(_calibrateIndex, false);
       _calibrateCb = nullptr;
@@ -357,10 +345,11 @@ private:
     for (uint8_t i = 0; i < _allAddrsCount; i++) {
       float currentTemp = _sensors.getTempC(_allAddrs[i]);
       float base = _calibrateBaseTemp[i];
-      float delta = (base == DEVICE_DISCONNECTED_C) ? 0 : currentTemp - base;
+      if (base == DEVICE_DISCONNECTED_C || currentTemp == DEVICE_DISCONNECTED_C) continue;
+      float delta = currentTemp - base;
 
       if (delta >= CALIBRATE_THRESHOLD) {
-        Serial.printf("[CALIBRATE] Sensor %d heated by %.1f C -> %s\n",
+        Log.printf("[CALIBRATE] Sensor %d heated by %.1f C -> %s\n",
           i, delta, sensorName(_calibrateIndex));
 
         memcpy(_expectedAddrs[_calibrateIndex], _allAddrs[i], 8);

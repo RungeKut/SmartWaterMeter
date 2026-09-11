@@ -39,6 +39,17 @@
 | Обмен данными | WebSocket + ArduinoJson 7.x |
 | Файловая система | LittleFS (1 MB) |
 | Среда | PlatformIO, ESP8266 Arduino framework |
+| Логирование | `Log` (Print) → USB-Serial + Telnet |
+
+## Разметка flash (eagle.flash.4m2m.ld)
+
+| Область | Смещение | Размер |
+|---------|----------|--------|
+| Прошивка | `0x000000` | ~1 MB |
+| LittleFS | `0x200000` | 2 MB |
+| EEPROM | `0x3FB000` | 4 KB |
+
+A/B-слотов нет. OTA пишет образ во временную область под файловой системой, а загрузчик `eboot` при перезагрузке копирует его в `0x000000`.
 
 ## Поток данных (основной цикл)
 
@@ -48,15 +59,15 @@
     ├─ WiFiupd() — поддержание WiFi/AP
     ├─ updateLocalTime() — время из NTP
     │
-    ├─ [DS18B20 Фаза 1] startConversion() — каждые 5000 мс
+    ├─ [DS18B20 Фаза 1] startConversion() — каждые 2000 мс (1000 при калибровке)
     │     └─ запускает ~750 мс конверсию на шине
     │
     ├─ [DS18B20 Фаза 2] readTemperatures() — через ≥850 мс
-    │     └─ broadcast JSON (sensors) всем WebSocket-клиентам
+    │     └─ broadcast JSON (sensors): телеметрия + датчики + шина
     │     └─ [каждые 30 с] rescanBusLight() — обновление списка шины
     │
     ├─ MeterCounter::flush() — сбор импульсов (каждый цикл)
-    ├─ EEPROM save — каждые 5 минут
+    ├─ EEPROM save — каждые 5 минут (config.save(), одна запись)
     ├─ Email report — по расписанию
     └─ delay(10)
 ```
@@ -78,6 +89,6 @@
 4. TemperatureSensors::begin() — инициализация DS18B20
 5. MeterCounter::begin() — инициализация счётчиков
 6. connectToWiFi() / startAPMode()
-7. ArduinoOTA, Telnet, FailsafeOTA
+7. Log.setSink(&telnet), ArduinoOTA, Telnet, FailsafeOTA
 8. LittleFS.mount() + HTTP + WebSocket
 9. SMTP: Power-On email (если настроен)

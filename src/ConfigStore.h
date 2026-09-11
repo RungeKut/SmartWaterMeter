@@ -7,6 +7,7 @@
 
 #include <Arduino.h>
 #include <EEPROM.h>
+#include "Log.h"
 
 // Магическое число для проверки валидности данных в EEPROM
 #define EEPROM_MAGIC 0x5A4B
@@ -60,21 +61,25 @@ public:
   void load() {
     EEPROM.get(0, data);
     if (data.magic != EEPROM_MAGIC) {
-      Serial.println(F("[EEPROM] Данные не найдены, инициализация по умолчанию"));
+      Log.println(F("[EEPROM] Данные не найдены, инициализация по умолчанию"));
       resetDefaults();
       save();
     } else {
-      Serial.println(F("[EEPROM] Данные загружены"));
-      Serial.printf("[EEPROM] SSID='%s' PASS='%s' (%d chars)\n",
-        data.wifiSSID, data.wifiPass, strlen(data.wifiPass));
+      Log.println(F("[EEPROM] Данные загружены"));
+      // Пароль в лог не пишем — Telnet-консоль открыта без авторизации
+      Log.printf("[EEPROM] SSID='%s', пароль задан: %s\n",
+        data.wifiSSID, strlen(data.wifiPass) > 0 ? "да" : "нет");
     }
   }
   
+  // Запись в EEPROM. Ядро ESP8266 само сравнивает буфер с текущим
+  // содержимым (EEPROM.put -> memcmp) и commit() не трогает flash,
+  // если данные не изменились — дополнительная защита от износа не нужна.
   void save() {
     data.magic = EEPROM_MAGIC;
     EEPROM.put(0, data);
     EEPROM.commit();
-    Serial.println(F("[EEPROM] Данные сохранены"));
+    Log.println(F("[EEPROM] Данные сохранены"));
   }
   
   void resetDefaults() {
@@ -128,12 +133,6 @@ public:
     return SENSOR_ADDR[0];
   }
   
-  // Сохранить показания счётчиков (вызывается из MeterCounter::flush)
-  void saveMeters() {
-    data.magic = EEPROM_MAGIC;
-    EEPROM.put(0, data);
-    EEPROM.commit();
-  }
 };
 
 #endif

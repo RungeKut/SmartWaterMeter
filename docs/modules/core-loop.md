@@ -9,6 +9,7 @@
 Порядок инициализации:
 
 1. Serial (115200), LED (BOOTING)
+1a. `Log.setSink(&telnet)` — логи начинают дублироваться в Telnet
 2. Формирование deviceName по MAC: `SmartWaterMeter-XXXXXX`
 3. ConfigStore::begin()
 4. TemperatureSensors::begin()
@@ -37,8 +38,27 @@
 | DS18B20 фаза 2 | через ≥850ms | readTemperatures + broadcast |
 | rescanBusLight | каждые 30с | Обновление списка шины |
 | MeterCounter::flush | каждый цикл | Сбор импульсов |
-| EEPROM save | каждые 5 мин | Сохранение счётчиков |
+| EEPROM save | каждые 5 мин | `config.save()` — счётчики и конфигурация одной записью |
 | Email | по расписанию | Отчёт |
+
+## Формирование JSON (helpers)
+
+Два помощника собирают состояние, общие для `fullState` и периодического `sensors`:
+
+| Функция | Что кладёт в документ |
+|---------|----------------------|
+| `fillSystemState(doc)` | device, uptime_sec, free_heap, wifi, wifi_rssi, ap_mode, ap_ssid, **ip**, время, ota_pending, ota_remaining |
+| `fillSensorState(doc)` | temperatures, meters, calibrating, calibrate_index, sensorMapping, busDevices |
+
+Раньше эти блоки были продублированы в двух местах, причём `sensors` содержал только температуры, счётчики и шину. Из-за этого uptime, heap, время и IP на Dashboard замирали до переподключения WebSocket.
+
+Ещё один помощник — `keepOrSet(dst, src, size)`: записывает значение только если оно непустое. Применяется к паролям (см. раздел «Пароли» ниже).
+
+## Пароли
+
+Сервер **не отдаёт** `wifiPass` и `smtpPass` клиенту. Значит, в SPA поля паролей всегда пустые, пока пользователь их не заполнит.
+
+Поэтому пустое значение в `saveConfig` трактуется как «оставить как было». Иначе сохранение любой настройки (например, времени отчёта) стирало бы оба пароля, и после перезагрузки устройство уходило бы в AP-режим.
 
 ## WebSocket-обработчик (`handleWsMessage`)
 
@@ -52,6 +72,8 @@
 | `startCalibration` | Запуск калибровки |
 | `cancelCalibration` | Отмена калибровки |
 
+Сообщение без поля `type` и `saveConfig` без объекта `config` отбрасываются с записью в лог. Раньше первое давало разыменование `nullptr` в `strcmp()`, второе — запись пустых строк во все поля конфигурации.
+
 ## HTTP-маршруты
 
 | Маршрут | Описание |
@@ -59,6 +81,7 @@
 | `/` (static) | SPA из LittleFS |
 | `/api.json` | JSON: температуры, счётчики, статус |
 | `/metrics` | Prometheus-метрики |
+| `/confirm` | Подтверждение прошивки после OTA (GET из браузера) |
 
 ## WiFi: реконнект
 

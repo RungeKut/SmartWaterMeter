@@ -379,12 +379,15 @@ function handleMessage(msg) {
       break;
     case 'sensors':
       if (state) {
-        state.temperatures = msg.temperatures;
-        if (msg.meters) state.meters = msg.meters;
-        if (msg.busDevices) state.busDevices = msg.busDevices;
+        // sensors несёт и системную телеметрию (uptime, heap, IP, время),
+        // поэтому сливаем всё, кроме config/sensorMapping — они приходят
+        // только в fullState.
+        Object.assign(state, msg);
+        updateDashboard();
+        updateCalibrate();
+        updateCalibrateBusTable();
+        updateOTABanner();
       }
-      updateDashboard();
-      updateCalibrateBusTable();
       break;
     case 'saveConfigResult':
       showToast(msg.message || 'Config saved');
@@ -461,8 +464,11 @@ function updateDashboard() {
     ? '<span class="badge ok">Connected</span>'
     : '<span class="badge err">' + (state.ap_mode ? 'AP mode' : 'Disconnected') + '</span>';
   
-  document.getElementById('sysRSSI').textContent = state.wifi_rssi + ' dBm';
-  document.getElementById('sysIP').textContent = connected ? state.ap_ssid : '192.168.0.1';
+  document.getElementById('sysRSSI').textContent = connected ? state.wifi_rssi + ' dBm' : '--';
+  // В STA-режиме показываем IP, в режиме точки доступа — её SSID
+  document.getElementById('sysIP').textContent = state.ap_mode
+    ? (state.ap_ssid || '192.168.0.1')
+    : (state.ip || '--');
 
   if (state.time_valid && state.time_hour !== undefined) {
     const h = String(state.time_hour).padStart(2,'0');

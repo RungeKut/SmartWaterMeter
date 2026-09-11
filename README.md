@@ -10,8 +10,8 @@
 - SPA веб-интерфейс (Material Design) через WebSocket — Dashboard + Settings + Calibrate
 - SMTP-отправка показаний по расписанию (email) + тестовая отправка
 - JSON API для Home Assistant / Prometheus
-- Telnet-доступ к логам по WiFi
-- OTA-обновление с A/B слотами и автоматическим откатом
+- Telnet-доступ к логам прошивки по WiFi
+- OTA-обновление по WiFi с подтверждением прошивки
 - Калибровка датчиков температуры через веб-интерфейс (нагрев >5°C)
 - Карта шины OneWire: просмотр всех датчиков на шине с адресами и температурами
 
@@ -69,6 +69,7 @@ cp src/secrets.h.example src/secrets.h
 - **PIN_METER_HOT / PIN_METER_COLD** — пины герконов (D5=14, D6=12)
 - **ONE_WIRE_BUS** — пин датчиков DS18B20 (D3=0)
 - **SENSOR_ADDR[4]** — адреса датчиков DS18B20 (можно оставить заглушки и откалибровать через веб)
+- **LITERS_PER_PULSE** — цена импульса счётчика **в литрах** (обычно 1.0)
 
 ### 3. Сборка и прошивка
 
@@ -92,15 +93,15 @@ pio run --target uploadfs --upload-port COM3
 Открывайте в браузере http://<IP-устройства>/. SPA на Vanilla JS с Material Design.
 
 ### Dashboard
-- Температуры: Cold, Hot, Supply, Return (обновление каждую секунду)
+- Температуры: Cold, Hot, Supply, Return (обновление каждые 2 секунды)
 - Показания счётчиков воды (ГВС / ХВС в м³)
-- Системная информация: WiFi, RSSI, IP, uptime, свободная память
+- Системная информация: WiFi, RSSI, IP, uptime, свободная память (обновляется вместе с датчиками)
 
 ### Settings
 - **WiFi** — SSID и пароль
 - **SMTP** — хост, порт (465), email отправителя, пароль приложения, получатель
 - **Расписание отчётов** — время (HH:MM), ежедневно / еженедельно / ежемесячно
-- **Счётчики** — текущие показания и литров на импульс
+- **Счётчики** — текущие показания (м³) и цена импульса в литрах
 - **Test Email** — отправка тестового письма
 - **Save & Reboot / Restart**
 
@@ -121,6 +122,7 @@ GET http://<ip>/api.json
   "free_heap": 21704,
   "wifi": "connected",
   "wifi_rssi": -65,
+  "ip": "192.168.88.89",
   "time_valid": true,
   "temperatures": {
     "cold": 22.5, "hot": 55.3,
@@ -151,24 +153,27 @@ sensor:
 
 ## OTA-обновление
 
-Прошивка с A/B слотами (каждый по 1MB) — автоматический откат при сбое.
+Прошивка по WiFi через ArduinoOTA.
 
 ```bash
-# OTA-прошивка
-pio run --target upload --upload-port 192.168.x.x
+# OTA-прошивка (адрес задан в platformio.ini)
+pio run --target upload
 
-# Предварительно раскомментировать в platformio.ini:
-# upload_protocol = espota
-# upload_port = 192.168.x.x
+# Или явно
+pio run --target upload --upload-port 192.168.x.x
 ```
 
-После OTA на веб-интерфейсе появляется предупреждение. Нажмите **Confirm** в течение 5 минут, иначе автоматический откат.
+После OTA в веб-интерфейсе появляется баннер с обратным отсчётом. Нажмите **Confirm** в течение 5 минут — иначе устройство один раз перезагрузится.
 
 Подтверждение через Telnet:
 ```
 telnet 192.168.88.89
 > confirm
 ```
+
+Или через браузер: `http://192.168.88.89/confirm`
+
+> **Важно:** A/B-слотов и автоматического отката на ESP8266 нет. Загрузчик `eboot` при перезагрузке копирует новый образ поверх старого — возвращаться некуда. Подтверждение служит признаком того, что прошивка дожила до `loop()`. Если прошивка оказалась нерабочей, помогает только перепрошивка по USB. Подробности — в [docs/modules/ota.md](docs/modules/ota.md).
 
 ## Отладка
 
@@ -190,20 +195,20 @@ telnet 192.168.88.89
 
 ```
 SmartWaterMeter/
-  platformio.ini              # Конфигурация сборки (ESPAsyncWebServer, LittleFS, A/B)
-  upload_script.py            # Двойная заливка A/B слотов при USB-прошивке
+  platformio.ini              # Конфигурация сборки (ESPAsyncWebServer, LittleFS)
   data/
     index.html                # SPA-фронтенд (Vanilla JS, WebSocket)
   src/
     Wemos_Mini.ino            # Главный скетч (setup, loop, WebSocket, HTTP)
+    Log.h                     # Единый вывод логов: USB-Serial + Telnet
     secrets.h                 # Пароли WiFi/SMTP, адреса датчиков (в .gitignore)
     secrets.h.example         # Пример конфигурации
     ConfigStore.h             # EEPROM: сохранение/загрузка конфига
     MeterCounter.h            # Импульсные счётчики (прерывания CHANGE + debounce)
     TemperatureSensors.h      # DS18B20: асинхронный цикл, калибровка, карта шины
     StatusLED.h               # Светодиодная индикация (WiFi, ошибки датчиков)
-    TelnetSerial.h            # Логи по WiFi (TCP:23)
-    FailsafeOTA.h             # Безопасное OTA с A/B слотами и откатом
+    TelnetSerial.h            # Логи по WiFi (TCP:23) + консоль команд
+    FailsafeOTA.h             # Подтверждение прошивки после OTA
   .gitignore
   LICENSE
   README.md
@@ -231,7 +236,6 @@ pio device monitor --port COM3 --baud 115200
 ### Важно
 
 - После изменения `data/index.html` нужно перезаливать файловую систему: `pio run --target uploadfs`
-- После первого USB-клннекта `upload_script.py` автоматически заливает прошивку в оба слота (A/B)
 - Используйте **Ctrl+F5** в браузере для сброса кэша после обновления LittleFS
 
 ## Зависимости

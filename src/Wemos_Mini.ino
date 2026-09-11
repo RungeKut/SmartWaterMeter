@@ -9,7 +9,7 @@
  *   - JSON API (/api.json) + Prometheus (/metrics)
  *   - SMTP email reports on schedule
  *   - Telnet serial console over WiFi
- *   - Failsafe OTA with automatic rollback (A/B slots)
+ *   - OTA with confirmation watchdog (see FailsafeOTA.h)
  *   - WiFi STA with AP fallback
  ******************************************************************/
 
@@ -28,6 +28,7 @@
 
 // Project headers
 #include "secrets.h"
+#include "Log.h"
 #include "ConfigStore.h"
 #include "MeterCounter.h"
 #include "TemperatureSensors.h"
@@ -102,6 +103,90 @@ void wsBroadcastJson(const JsonDocument &doc);
 void handleWsMessage(AsyncWebSocketClient *client, const String &msg);
 void sendFullState(AsyncWebSocketClient *client);
 void setupHttpRoutes();
+void keepOrSet(char *dst, JsonVariantConst src, size_t dstSize);
+void fillSystemState(JsonDocument &doc);
+void fillSensorState(JsonDocument &doc);
+
+// ==================== Helpers ====================
+
+// Записать значение только если оно непустое. Используется для паролей:
+// SPA не получает их с устройства, поэтому пустое поле означает
+// «не менять», а не «стереть».
+void keepOrSet(char *dst, JsonVariantConst src, size_t dstSize) {
+  const char *val = src.is<const char*>() ? src.as<const char*>() : nullptr;
+  if (val != nullptr && val[0] != '\0') {
+    strlcpy(dst, val, dstSize);
+  }
+}
+
+// Системная телеметрия — одинаковая в fullState и в периодическом sensors,
+// чтобы Dashboard обновлялся вживую, а не только при переподключении.
+void fillSystemState(JsonDocument &doc) {
+  doc["device"] = deviceName;
+  doc["uptime_sec"] = millis() / 1000;
+  doc["free_heap"] = ESP.getFreeHeap();
+  doc["wifi"] = wifiConnected ? "connected" : "disconnected";
+  doc["wifi_rssi"] = wifiConnected ? WiFi.RSSI() : 0;
+  doc["ap_mode"] = apModeActive;
+  doc["ap_ssid"] = apSSID;
+  doc["ip"] = apModeActive ? WiFi.softAPIP().toString()
+                           : WiFi.localIP().toString();
+  doc["time_valid"] = timeValid;
+  if (ptm) {
+    doc["time_hour"] = ptm->tm_hour;
+    doc["time_min"]  = ptm->tm_min;
+    doc["time_sec"]  = ptm->tm_sec;
+    doc["time_year"] = ptm->tm_year + 1900;
+    doc["time_mon"]  = ptm->tm_mon + 1;
+    doc["time_mday"] = ptm->tm_mday;
+  }
+  doc["ota_pending"] = failsafe.isPending();
+  doc["ota_remaining"] = failsafe.remainingSec();
+}
+
+// Температуры, счётчики и карта шины OneWire
+void fillSensorState(JsonDocument &doc) {
+  JsonObject t = doc["temperatures"].to<JsonObject>();
+  t["cold"]   = tempSensors.getTempHVS();
+  t["hot"]    = tempSensors.getTempGVS();
+  t["return"] = tempSensors.getTempReturn();
+  t["supply"] = tempSensors.getTempSupply();
+
+  JsonObject m = doc["meters"].to<JsonObject>();
+  m["hot_m3"]  = config.data.meterHotM3;
+  m["cold_m3"] = config.data.meterColdM3;
+
+  doc["calibrating"] = tempSensors.isCalibrating();
+  doc["calibrate_index"] = tempSensors.getCalibrateIndex();
+
+  JsonArray sensors = doc["sensorMapping"].to<JsonArray>();
+  for (int i = 0; i < NUM_SENSORS; i++) {
+    JsonObject sm = sensors.add<JsonObject>();
+    sm["name"] = TemperatureSensors::sensorName(i);
+    sm["found"] = tempSensors.isFound(i);
+    sm["temp"] = tempSensors.getTemp(i);
+  }
+
+  JsonArray bus = doc["busDevices"].to<JsonArray>();
+  for (uint8_t i = 0; i < tempSensors.getAllAddrCount(); i++) {
+    JsonObject b = bus.add<JsonObject>();
+    b["index"] = i;
+    b["temp"] = tempSensors.getRawTemp(i);
+    if (tempSensors.isCalibrating()) {
+      b["baseTemp"] = tempSensors.getCalibrateBaseTemp(i);
+      b["delta"] = tempSensors.getCalibrateDelta(i);
+    }
+    const uint8_t* addr = tempSensors.getAllAddr(i);
+    if (addr) {
+      char addrStr[17];
+      for (int j = 0; j < 8; j++) {
+        sprintf(addrStr + j * 2, "%02X", addr[j]);
+      }
+      addrStr[16] = '\0';
+      b["address"] = addrStr;
+    }
+  }
+}
 
 // ==================== SETUP ====================
 void setup() {
@@ -117,7 +202,7 @@ void setup() {
     AP_SSID_PREFIX, mac[3], mac[4], mac[5]);
   snprintf(deviceName, sizeof(deviceName), "%s-%02X%02X%02X",
     AP_SSID_PREFIX, mac[3], mac[4], mac[5]);
-  Serial.printf("\n\n=== %s ===\n", deviceName);
+  Log.printf("\n\n=== %s ===\n", deviceName);
 
   config.begin();
   tempSensors.begin();
@@ -139,42 +224,46 @@ void setup() {
   // OTA
   ArduinoOTA.setHostname(deviceName);
   ArduinoOTA.onStart([]() {
-    Serial.println("[OTA] Start");
+    Log.println("[OTA] Start");
   });
   ArduinoOTA.onEnd([]() {
-    Serial.println("[OTA] Done — setting failsafe flag");
+    Log.println("[OTA] Done — setting failsafe flag");
     failsafe.updateFirmware();
   });
   ArduinoOTA.onProgress([](unsigned int p, unsigned int t) {
-    Serial.printf("[OTA] %u%%\r", (p * 100) / t);
+    Log.printf("[OTA] %u%%\r", (p * 100) / t);
   });
   ArduinoOTA.onError([](ota_error_t e) {
-    Serial.printf("[OTA] Error: %u\n", e);
+    Log.printf("[OTA] Error: %u\n", e);
     // При ошибке OTA не выставляем флаг — всё остаётся как было
   });
   ArduinoOTA.begin();
 
+  Log.setSink(&telnet);   // с этого момента логи уходят и в Telnet
   telnet.begin();
   failsafe.begin();
 
   if (!LittleFS.begin()) {
-    Serial.println("[FS] LittleFS mount failed!");
+    Log.println("[FS] LittleFS mount failed!");
   } else {
-    Serial.println("[FS] LittleFS mounted");
+    Log.println("[FS] LittleFS mounted");
   }
 
   // WebSocket
   ws.onEvent([](AsyncWebSocket *server, AsyncWebSocketClient *client,
                  AwsEventType type, void *arg, uint8_t *data, size_t len) {
     if (type == WS_EVT_CONNECT) {
-      Serial.printf("[WS] Client #%u connected\n", client->id());
+      Log.printf("[WS] Client #%u connected\n", client->id());
       sendFullState(client);
     } else if (type == WS_EVT_DISCONNECT) {
-      Serial.printf("[WS] Client #%u disconnected\n", client->id());
+      Log.printf("[WS] Client #%u disconnected\n", client->id());
     } else if (type == WS_EVT_DATA) {
       AwsFrameInfo *info = (AwsFrameInfo*)arg;
       if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
-        handleWsMessage(client, String((char*)data).substring(0, len));
+        // data не гарантированно NUL-terminated — берём ровно len байт
+        String payload;
+        payload.concat((const char*)data, len);
+        handleWsMessage(client, payload);
       }
     }
   });
@@ -193,7 +282,7 @@ void setup() {
     trySendEmail("Power On", String(deviceName) + " is Power On");
   }
 
-  Serial.println("[Setup] Ready");
+  Log.println("[Setup] Ready");
 }
 
 // ==================== LOOP ====================
@@ -248,38 +337,13 @@ void loop() {
     sensorConvPending = false;
     tempSensors.readTemperatures();
 
-    // Broadcast to all WebSocket clients
+    // Broadcast to all WebSocket clients.
+    // Помимо датчиков шлём и системные поля — иначе uptime, heap, время
+    // и IP на Dashboard замирали бы до переподключения WebSocket.
     JsonDocument doc;
     doc["type"] = "sensors";
-    JsonObject t = doc.createNestedObject("temperatures");
-    t["cold"]   = tempSensors.getTempHVS();
-    t["hot"]    = tempSensors.getTempGVS();
-    t["return"] = tempSensors.getTempReturn();
-    t["supply"] = tempSensors.getTempSupply();
-    // Include live meter readings (updated every ~1s)
-    JsonObject m = doc.createNestedObject("meters");
-    m["hot_m3"]  = config.data.meterHotM3;
-    m["cold_m3"] = config.data.meterColdM3;
-    // Include bus devices for live calibrate table
-    JsonArray bus = doc.createNestedArray("busDevices");
-    for (uint8_t i = 0; i < tempSensors.getAllAddrCount(); i++) {
-      JsonObject b = bus.createNestedObject();
-      b["index"] = i;
-      b["temp"] = tempSensors.getRawTemp(i);
-      if (tempSensors.isCalibrating()) {
-        b["baseTemp"] = tempSensors.getCalibrateBaseTemp(i);
-        b["delta"] = tempSensors.getCalibrateDelta(i);
-      }
-      const uint8_t* addr = tempSensors.getAllAddr(i);
-      if (addr) {
-        char addrStr[17];
-        for (int j = 0; j < 8; j++) {
-          sprintf(addrStr + j * 2, "%02X", addr[j]);
-        }
-        addrStr[16] = '\0';
-        b["address"] = addrStr;
-      }
-    }
+    fillSystemState(doc);
+    fillSensorState(doc);
     wsBroadcastJson(doc);
 
     // Periodic bus rescan (every 30s) to detect newly connected/disconnected sensors
@@ -296,7 +360,6 @@ void loop() {
   // ---- EEPROM periodic save (every 5 min, includes meter values) ----
   if (now - lastEepromSave > 300000) {
     lastEepromSave = now;
-    config.saveMeters();
     config.save();
   }
 
@@ -321,14 +384,14 @@ void loop() {
   // ---- Calibration request ----
   if (calibrateRequested && !tempSensors.isCalibrating()) {
     calibrateRequested = false;
+    // Список шины актуализируется внутри startCalibration() — до того,
+    // как снимаются базовые температуры.
     tempSensors.startCalibration(calibrateRequestedIndex, onCalibrateDone);
-    // Rescan bus for calibration mode
-    tempSensors.rescanBus();
   }
 
   // ---- Restart ----
   if (needsRestart && now > 10000) {
-    Serial.println("[System] Restart...");
+    Log.println("[System] Restart...");
     ESP.restart();
   }
 
@@ -338,10 +401,10 @@ void loop() {
 // ==================== WiFi ====================
 bool connectToWiFi() {
   if (strlen(config.data.wifiSSID) == 0) {
-    Serial.println("[WiFi] SSID not set, AP mode");
+    Log.println("[WiFi] SSID not set, AP mode");
     return false;
   }
-  Serial.printf("[WiFi] Connecting to '%s'...\n", config.data.wifiSSID);
+  Log.printf("[WiFi] Connecting to '%s'...\n", config.data.wifiSSID);
   WiFi.persistent(false);
   WiFi.disconnect(true);
   delay(100);
@@ -356,23 +419,23 @@ bool connectToWiFi() {
   while (attempts < 60) {
     delay(500);
     attempts++;
-    Serial.print(".");
+    Log.print(".");
     if (WiFi.status() == WL_CONNECTED) break;
   }
-  Serial.println();
+  Log.println();
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.printf("[WiFi] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
+    Log.printf("[WiFi] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
     wifiConnected = true;
     apModeActive = false;
     return true;
   }
-  Serial.printf("[WiFi] Failed (status: %d)\n", WiFi.status());
+  Log.printf("[WiFi] Failed (status: %d)\n", WiFi.status());
   wifiConnected = false;
   return false;
 }
 
 void startAPMode() {
-  Serial.println("[WiFi] Starting AP mode...");
+  Log.println("[WiFi] Starting AP mode...");
   WiFi.mode(WIFI_AP);
   WiFi.softAPConfig(
     IPAddress(192, 168, 0, 1),
@@ -380,7 +443,7 @@ void startAPMode() {
     IPAddress(255, 255, 255, 0)
   );
   WiFi.softAP(apSSID, AP_PASS_DEFAULT);
-  Serial.printf("[WiFi] AP: %s (192.168.0.1)\n", apSSID);
+  Log.printf("[WiFi] AP: %s (192.168.0.1)\n", apSSID);
   apModeActive = true;
   wifiConnected = false;
 }
@@ -390,7 +453,7 @@ void WiFiupd() {
     uint32_t now = millis();
     if (now - lastWiFiRetry > 600000) {
       lastWiFiRetry = now;
-      Serial.println("[WiFi] AP: attempting reconnection...");
+      Log.println("[WiFi] AP: attempting reconnection...");
       WiFi.softAPdisconnect(true);
       delay(100);
       WiFi.mode(WIFI_OFF);
@@ -406,7 +469,7 @@ void WiFiupd() {
           if (WiFi.status() == WL_CONNECTED) break;
         }
         if (WiFi.status() == WL_CONNECTED) {
-          Serial.printf("[WiFi] Reconnected! IP: %s\n", WiFi.localIP().toString().c_str());
+          Log.printf("[WiFi] Reconnected! IP: %s\n", WiFi.localIP().toString().c_str());
           wifiConnected = true;
           apModeActive = false;
           wifiReconnectFails = 0;
@@ -437,7 +500,7 @@ void WiFiupd() {
   if (now - lastWiFiRetry > 30000) {
     lastWiFiRetry = now;
     wifiConnected = false;
-    Serial.println("[WiFi] Reconnecting...");
+    Log.println("[WiFi] Reconnecting...");
     if (strlen(config.data.wifiSSID) > 0) {
       WiFi.disconnect(true);
       delay(100);
@@ -458,7 +521,7 @@ void WiFiupd() {
       } else {
         wifiReconnectFails++;
         if (wifiReconnectFails >= 3) {
-          Serial.println("[WiFi] Too many failures, switching to AP mode");
+          Log.println("[WiFi] Too many failures, switching to AP mode");
           startAPMode();
         }
       }
@@ -493,37 +556,10 @@ void sendFullState(AsyncWebSocketClient *client) {
   JsonDocument doc;
   doc["type"] = "fullState";
 
-  doc["device"] = deviceName;
-  doc["uptime_sec"] = millis() / 1000;
-  doc["free_heap"] = ESP.getFreeHeap();
-  doc["wifi"] = wifiConnected ? "connected" : "disconnected";
-  doc["wifi_rssi"] = WiFi.RSSI();
-  doc["ap_mode"] = apModeActive;
-  doc["ap_ssid"] = apSSID;
-  doc["time_valid"] = timeValid;
-  if (ptm) {
-    doc["time_hour"] = ptm->tm_hour;
-    doc["time_min"]  = ptm->tm_min;
-    doc["time_sec"]  = ptm->tm_sec;
-    doc["time_year"] = ptm->tm_year + 1900;
-    doc["time_mon"]  = ptm->tm_mon + 1;
-    doc["time_mday"] = ptm->tm_mday;
-  }
+  fillSystemState(doc);
+  fillSensorState(doc);
 
-  JsonObject t = doc.createNestedObject("temperatures");
-  t["cold"]   = tempSensors.getTempHVS();
-  t["hot"]    = tempSensors.getTempGVS();
-  t["return"] = tempSensors.getTempReturn();
-  t["supply"] = tempSensors.getTempSupply();
-
-  JsonObject m = doc.createNestedObject("meters");
-  m["hot_m3"]  = config.data.meterHotM3;
-  m["cold_m3"] = config.data.meterColdM3;
-
-  doc["calibrating"] = tempSensors.isCalibrating();
-  doc["calibrate_index"] = tempSensors.getCalibrateIndex();
-
-  JsonObject cfg = doc.createNestedObject("config");
+  JsonObject cfg = doc["config"].to<JsonObject>();
   cfg["wifiSSID"] = config.data.wifiSSID;
   cfg["smtpHost"] = config.data.smtpHost;
   cfg["smtpPort"] = config.data.smtpPort;
@@ -537,40 +573,7 @@ void sendFullState(AsyncWebSocketClient *client) {
   cfg["meterColdM3"] = config.data.meterColdM3;
   cfg["litersPerPulseHot"] = config.data.litersPerPulseHot;
   cfg["litersPerPulseCold"] = config.data.litersPerPulseCold;
-
-  JsonArray sensors = doc.createNestedArray("sensorMapping");
-  for (int i = 0; i < NUM_SENSORS; i++) {
-    JsonObject s = sensors.createNestedObject();
-    s["name"] = TemperatureSensors::sensorName(i);
-    s["found"] = tempSensors.isFound(i);
-    s["temp"] = tempSensors.getTemp(i);
-  }
-
-  JsonArray bus = doc.createNestedArray("busDevices");
-  for (uint8_t i = 0; i < tempSensors.getAllAddrCount(); i++) {
-    JsonObject b = bus.createNestedObject();
-    b["index"] = i;
-    b["temp"] = tempSensors.getRawTemp(i);
-    if (tempSensors.isCalibrating()) {
-      b["baseTemp"] = tempSensors.getCalibrateBaseTemp(i);
-      b["delta"] = tempSensors.getCalibrateDelta(i);
-    }
-    // Format address as hex string
-    const uint8_t* addr = tempSensors.getAllAddr(i);
-    if (addr) {
-      char addrStr[17];
-      for (int j = 0; j < 8; j++) {
-        sprintf(addrStr + j * 2, "%02X", addr[j]);
-      }
-      addrStr[16] = '\0';
-      b["address"] = addrStr;
-    }
-  }
-
-  doc["ota_pending"] = failsafe.isPending();
-  if (failsafe.isPending()) {
-    doc["ota_remaining"] = failsafe.remainingSec();
-  }
+  // Пароли (wifiPass/smtpPass) намеренно не отдаём клиенту
 
   wsSendJson(client, doc);
 }
@@ -579,24 +582,41 @@ void handleWsMessage(AsyncWebSocketClient *client, const String &msg) {
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, msg);
   if (err) {
-    Serial.printf("[WS] Parse error: %s\n", err.c_str());
+    Log.printf("[WS] Parse error: %s\n", err.c_str());
     return;
   }
 
   const char* type = doc["type"];
+  if (type == nullptr) {
+    Log.println("[WS] Message without 'type' field, ignored");
+    return;
+  }
 
   if (strcmp(type, "getFullState") == 0) {
     sendFullState(client);
   }
   else if (strcmp(type, "saveConfig") == 0) {
     JsonObject cfg = doc["config"];
+    if (cfg.isNull()) {
+      // Без объекта config все поля ушли бы в EEPROM пустыми
+      Log.println("[WS] saveConfig without 'config' object, ignored");
+      JsonDocument resp;
+      resp["type"] = "saveConfigResult";
+      resp["success"] = false;
+      resp["message"] = "Malformed request";
+      wsSendJson(client, resp);
+      return;
+    }
 
     strlcpy(config.data.wifiSSID, cfg["wifiSSID"] | "", sizeof(config.data.wifiSSID));
-    strlcpy(config.data.wifiPass, cfg["wifiPass"] | "", sizeof(config.data.wifiPass));
+    // Поля паролей в SPA всегда приходят пустыми, если пользователь их не
+    // трогал (сервер их не отдаёт). Пустое значение = «оставить как было»,
+    // иначе сохранение любой настройки стирало бы пароли.
+    keepOrSet(config.data.wifiPass, cfg["wifiPass"], sizeof(config.data.wifiPass));
     strlcpy(config.data.smtpHost, cfg["smtpHost"] | "", sizeof(config.data.smtpHost));
     config.data.smtpPort = cfg["smtpPort"] | 465;
     strlcpy(config.data.smtpEmail, cfg["smtpEmail"] | "", sizeof(config.data.smtpEmail));
-    strlcpy(config.data.smtpPass, cfg["smtpPass"] | "", sizeof(config.data.smtpPass));
+    keepOrSet(config.data.smtpPass, cfg["smtpPass"], sizeof(config.data.smtpPass));
     strlcpy(config.data.smtpRecipient, cfg["smtpRecipient"] | "", sizeof(config.data.smtpRecipient));
     config.data.reportHour = cfg["reportHour"] | 9;
     config.data.reportMinute = cfg["reportMinute"] | 0;
@@ -683,7 +703,9 @@ void setupHttpRoutes() {
     json += "\"uptime_sec\":" + String(millis() / 1000) + ",";
     json += "\"free_heap\":" + String(ESP.getFreeHeap()) + ",";
     json += "\"wifi\":\"" + String(wifiConnected ? "connected" : "disconnected") + "\",";
-    json += "\"wifi_rssi\":" + String(WiFi.RSSI()) + ",";
+    json += "\"wifi_rssi\":" + String(wifiConnected ? WiFi.RSSI() : 0) + ",";
+    json += "\"ip\":\"" + (apModeActive ? WiFi.softAPIP().toString()
+                                       : WiFi.localIP().toString()) + "\",";
     json += "\"time_valid\":" + String(timeValid ? "true" : "false") + ",";
     json += "\"temperatures\":{";
     json += "\"cold\":" + String(tempSensors.getTempHVS(), 1) + ",";
@@ -731,7 +753,7 @@ void setupHttpRoutes() {
     body += "smartwatermeter_free_heap_bytes " + String(ESP.getFreeHeap()) + "\n";
     body += "# HELP smartwatermeter_wifi_rssi WiFi signal strength\n";
     body += "# TYPE smartwatermeter_wifi_rssi gauge\n";
-    body += "smartwatermeter_wifi_rssi " + String(WiFi.RSSI()) + "\n";
+    body += "smartwatermeter_wifi_rssi " + String(wifiConnected ? WiFi.RSSI() : 0) + "\n";
     body += "# HELP smartwatermeter_calibrating Whether calibration is in progress\n";
     body += "# TYPE smartwatermeter_calibrating gauge\n";
     body += "smartwatermeter_calibrating " + String(tempSensors.isCalibrating() ? "1" : "0") + "\n";
@@ -742,10 +764,12 @@ void setupHttpRoutes() {
 // ==================== SMTP ====================
 void trySendEmail(const String &subject, const String &body) {
   if (strlen(config.data.smtpEmail) == 0 || strlen(config.data.smtpRecipient) == 0) {
-    Serial.println("[SMTP] Email not configured, skipping");
+    Log.println("[SMTP] Email not configured, skipping");
     return;
   }
-  Serial.printf("[SMTP] Sending to %s...\n", config.data.smtpRecipient);
+  Log.printf("[SMTP] Sending to %s...\n", config.data.smtpRecipient);
+
+  smtp.callback(smtpCallback);
 
   Session_Config smtpConfig;
   smtpConfig.server.host_name = config.data.smtpHost;
@@ -755,7 +779,7 @@ void trySendEmail(const String &subject, const String &body) {
   smtpConfig.login.user_domain = "";
 
   if (!smtp.connect(&smtpConfig)) {
-    Serial.printf("[SMTP] Connection error: %d %s\n",
+    Log.printf("[SMTP] Connection error: %d %s\n",
       smtp.statusCode(), smtp.errorReason().c_str());
     return;
   }
@@ -774,10 +798,10 @@ void trySendEmail(const String &subject, const String &body) {
                           | esp_mail_smtp_notify_delay;
 
   if (!MailClient.sendMail(&smtp, &message)) {
-    Serial.printf("[SMTP] Error: %d %s\n",
+    Log.printf("[SMTP] Error: %d %s\n",
       smtp.statusCode(), smtp.errorReason().c_str());
   } else {
-    Serial.println("[SMTP] Sent successfully");
+    Log.println("[SMTP] Sent successfully");
   }
 }
 
@@ -809,7 +833,7 @@ void onCalibrateDone(int sensorIndex, bool success) {
   calibrateLastResult = success;
   calibrateFeedbackTime = millis();
   if (success) {
-    Serial.printf("[CALIBRATE] Sensor %s calibrated!\n",
+    Log.printf("[CALIBRATE] Sensor %s calibrated!\n",
       TemperatureSensors::sensorName(sensorIndex));
   }
   JsonDocument doc;
@@ -824,13 +848,13 @@ void telnetConfirmFirmware() {
 }
 
 void smtpCallback(SMTP_Status status) {
-  Serial.println(status.info());
+  Log.println(status.info());
   if (status.success()) {
-    Serial.printf("[SMTP] Sent: %d, Failed: %d\n",
+    Log.printf("[SMTP] Sent: %d, Failed: %d\n",
       status.completedCount(), status.failedCount());
     for (size_t i = 0; i < smtp.sendingResult.size(); i++) {
       SMTP_Result result = smtp.sendingResult.getItem(i);
-      Serial.printf("[SMTP] Msg %d: %s\n", i + 1,
+      Log.printf("[SMTP] Msg %d: %s\n", i + 1,
         result.completed ? "success" : "failed");
     }
     smtp.sendingResult.clear();
