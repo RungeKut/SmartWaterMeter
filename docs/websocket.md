@@ -72,6 +72,18 @@
 
 > **Пароли не передаются.** В `config` нет `wifiPass` и `smtpPass` — устройство их не отдаёт.
 
+`fullState` дополнительно содержит `meterDiag` — диагностику герконов (по объекту на счётчик):
+
+```json
+"meterDiag": [
+  { "name": "Hot", "closed": false, "stateAgeSec": 1234, "pulses": 17,
+    "bounces": 2, "lastClosedMs": 120, "minClosedMs": 98, "maxClosedMs": 140,
+    "lastOpenMs": 3400, "overflow": 0 }
+]
+```
+
+В периодическое сообщение `sensors` эти поля не кладутся — они меняются медленно, а секундная рассылка должна оставаться компактной.
+
 ### `sensors`
 
 Периодическое обновление — раз в секунду.

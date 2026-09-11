@@ -66,7 +66,7 @@ A/B-слотов нет. OTA пишет образ во временную об�
     │     └─ broadcast JSON (sensors): телеметрия + датчики + шина
     │     └─ [каждые 30 с] rescanBusLight() — обновление списка шины
     │
-    ├─ MeterCounter::flush() — сбор импульсов (каждый цикл)
+    ├─ MeterCounter::process() — разбор событий геркона (каждый цикл)
     ├─ EEPROM save — каждые 5 минут (config.save(), одна запись)
     ├─ Email report — по расписанию
     └─ delay(10)

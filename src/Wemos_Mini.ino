@@ -81,7 +81,8 @@ bool sensorConvPending = false;
 uint32_t lastBusRescan = 0;
 uint32_t lastEepromSave = 0;
 uint32_t lastEmailSend = 0;
-uint32_t lastMeterFlush = 0;
+uint32_t lastMeterPulse = 0;
+bool metersDirty = false;
 
 // Calibration
 bool calibrateRequested = false;
@@ -356,9 +357,22 @@ void loop() {
     }
   }
 
-  // ---- Meters: flush pulses every loop cycle when sensors are read (~1s) ----
-  meterHot.flush();
-  meterCold.flush();
+  // ---- Счётчики: разбор событий геркона (каждый цикл) ----
+  bool hotPulse = meterHot.process();
+  bool coldPulse = meterCold.process();
+  if (hotPulse || coldPulse) {
+    metersDirty = true;
+    lastMeterPulse = now;
+  }
+
+  // Показания уезжают в EEPROM через 30 с после последнего импульса.
+  // Расход воды идёт пачками: открыли кран — закрыли. Так теряется
+  // только то, что пришлось на обрыв питания прямо во время
+  // пользования, а число записей равно числу «сеансов» за сутки.
+  if (metersDirty && now - lastMeterPulse > 30000) {
+    metersDirty = false;
+    config.save();
+  }
 
   // ---- EEPROM periodic save (every 5 min, includes meter values) ----
   if (now - lastEepromSave > 300000) {
@@ -576,7 +590,28 @@ void sendFullState(AsyncWebSocketClient *client) {
   cfg["meterColdM3"] = config.data.meterColdM3;
   cfg["litersPerPulseHot"] = config.data.litersPerPulseHot;
   cfg["litersPerPulseCold"] = config.data.litersPerPulseCold;
+  cfg["debounceClosedMs"] = config.data.debounceClosedMs;
+  cfg["debounceOpenMs"] = config.data.debounceOpenMs;
   // Пароли (wifiPass/smtpPass) намеренно не отдаём клиенту
+
+  // Диагностика герконов. Кладём только в fullState (раз в 30 с по
+  // keep-alive) — в секундной рассылке это лишние байты.
+  JsonArray md = doc["meterDiag"].to<JsonArray>();
+  MeterCounter* meters[2] = { &meterHot, &meterCold };
+  const char* names[2] = { "Hot", "Cold" };
+  for (int i = 0; i < 2; i++) {
+    JsonObject d = md.add<JsonObject>();
+    d["name"] = names[i];
+    d["closed"] = meters[i]->isClosed();
+    d["stateAgeSec"] = meters[i]->stateAgeSec();
+    d["pulses"] = meters[i]->totalPulses();
+    d["bounces"] = meters[i]->bounces();
+    d["lastClosedMs"] = meters[i]->lastClosedMs();
+    d["minClosedMs"] = meters[i]->minClosedMs();
+    d["maxClosedMs"] = meters[i]->maxClosedMs();
+    d["lastOpenMs"] = meters[i]->lastOpenMs();
+    d["overflow"] = meters[i]->queueOverflow();
+  }
 
   wsSendJson(client, doc);
 }
@@ -631,6 +666,9 @@ void handleWsMessage(AsyncWebSocketClient *client, const String &msg) {
     if (config.data.litersPerPulseHot <= 0) config.data.litersPerPulseHot = 1.0;
     config.data.litersPerPulseCold = cfg["litersPerPulseCold"] | 1.0f;
     if (config.data.litersPerPulseCold <= 0) config.data.litersPerPulseCold = 1.0;
+    // 0 = значения по умолчанию из MeterCounter.h
+    config.data.debounceClosedMs = cfg["debounceClosedMs"] | 0;
+    config.data.debounceOpenMs = cfg["debounceOpenMs"] | 0;
 
     config.save();
     needsRestart = true;

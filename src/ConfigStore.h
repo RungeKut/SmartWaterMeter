@@ -45,8 +45,12 @@ struct ConfigData {
   uint8_t reportSchedule;   // 0=daily, 1=weekly, 2=monthly
   uint8_t reportDay;        // 0=Sun..6=Sat (weekly), 1..31 (monthly)
   
-  // Резерв
-  uint8_t _reserved[12];
+  // Антидребезг герконов (мс). 0 = значения по умолчанию из MeterCounter.h
+  uint16_t debounceClosedMs;  // минимальная длительность замыкания
+  uint16_t debounceOpenMs;    // минимальная пауза перед новым замыканием
+
+  // Резерв (размер структуры не менялся — старые настройки читаются как есть)
+  uint8_t _reserved[8];
 };
 
 class ConfigStore {
@@ -106,6 +110,10 @@ public:
     // Адреса датчиков — невалидны (будет использоваться SENSOR_ADDR из secrets.h)
     data.sensorAddrsValid = false;
     
+    // Антидребезг герконов
+    data.debounceClosedMs = 0;   // 0 = взять значения по умолчанию
+    data.debounceOpenMs = 0;
+
     // Расписание отчёта по умолчанию: ежедневно в 09:00
     data.reportHour = 9;
     data.reportMinute = 0;

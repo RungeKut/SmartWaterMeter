@@ -37,7 +37,8 @@
 | DS18B20 фаза 1 | 1000ms | startConversion (~2 мс, неблокирующий) |
 | DS18B20 фаза 2 | через ≥850ms | readTemperatures + broadcast |
 | rescanBusLight | каждые 30с | Обновление списка шины |
-| MeterCounter::flush | каждый цикл | Сбор импульсов |
+| MeterCounter::process | каждый цикл | Разбор событий геркона |
+| EEPROM счётчиков | через 30 с после импульса | `config.save()` |
 | EEPROM save | каждые 5 мин | `config.save()` — счётчики и конфигурация одной записью |
 | Email | по расписанию | Отчёт |
 
