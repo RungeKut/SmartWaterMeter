@@ -93,7 +93,7 @@ pio run --target uploadfs --upload-port COM3
 Открывайте в браузере http://<IP-устройства>/. SPA на Vanilla JS с Material Design.
 
 ### Dashboard
-- Температуры: Cold, Hot, Supply, Return (обновление каждые 2 секунды)
+- Температуры: Cold, Hot, Supply, Return (обновление раз в секунду)
 - Показания счётчиков воды (ГВС / ХВС в м³)
 - Системная информация: WiFi, RSSI, IP, uptime, свободная память (обновляется вместе с датчиками)
 

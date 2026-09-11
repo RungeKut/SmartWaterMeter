@@ -5,10 +5,13 @@
  * Addresses: EEPROM (after calibration) -> secrets.h fallback
  *
  * Usage:
- *   tempSensors.begin()              // init + scan
- *   tempSensors.startConversion()    // async, ~750ms
- *   ...later...
- *   tempSensors.readTemperatures()   // read results
+ *   tempSensors.begin()              // init + scan, setWaitForConversion(false)
+ *   tempSensors.startConversion()    // ~2ms, конверсия идёт на шине ~750ms
+ *   ...>=850ms спустя...
+ *   tempSensors.readTemperatures()   // один проход по шине -> кеш _busTemps[]
+ *
+ * Все геттеры (getTemp, getRawTemp, дельты калибровки) читают кеш и
+ * на шину не обращаются.
  *
  * Calibration: heat a sensor, temperature rise >5C triggers save.
  ******************************************************************/
@@ -26,6 +29,13 @@
 #define CALIBRATE_THRESHOLD 5.0
 #define CALIBRATE_TIMEOUT 60000
 
+// Сколько подряд неудачных чтений терпим, прежде чем показать N/D.
+// Одиночный сбой CRC на шине OneWire — обычное дело (длинные провода,
+// наводки, слабая подтяжка). Гасить из-за него показание не нужно:
+// держим последнее валидное значение. Но и скрывать реально отключённый
+// датчик нельзя, поэтому терпение ограничено.
+#define MAX_READ_FAILURES 3
+
 typedef void (*CalibrateCallback)(int sensorIndex, bool success);
 
 class TemperatureSensors {
@@ -41,6 +51,8 @@ private:
   int _calibrateIndex;
   float _calibrateBaseTemp[MAX_BUS_DEVICES];
   DeviceAddress _allAddrs[MAX_BUS_DEVICES];
+  float _busTemps[MAX_BUS_DEVICES];   // кеш: заполняется раз за цикл
+  uint8_t _busFails[MAX_BUS_DEVICES]; // подряд неудачных чтений
   uint8_t _allAddrsCount;
   uint32_t _calibrateStartTime;
   bool _calibrateBaseReady;
@@ -59,11 +71,21 @@ public:
     }
     for (int i = 0; i < MAX_BUS_DEVICES; i++) {
       _calibrateBaseTemp[i] = DEVICE_DISCONNECTED_C;
+      _busTemps[i] = DEVICE_DISCONNECTED_C;
+      _busFails[i] = 0;
     }
   }
 
   void begin() {
     _sensors.begin();
+
+    // КРИТИЧНО для неблокирующего цикла.
+    // По умолчанию waitForConversion = true, и requestTemperatures()
+    // крутится в yield()-цикле до конца конверсии (~750 мс при 12 битах).
+    // Тогда двухфазная схема теряет смысл: loop() всё равно стоит.
+    // С false запуск конверсии стоит ~2 мс, а результат забирает
+    // readTemperatures() через >=850 мс.
+    _sensors.setWaitForConversion(false);
     _deviceCount = _sensors.getDeviceCount();
     Log.printf("[DS18B20] Found sensors: %d\n", _deviceCount);
 
@@ -107,6 +129,13 @@ public:
   // desynchronizing the DallasTemperature internal state (which caused all
   // sensors to return DEVICE_DISCONNECTED_C after rescan).
   void rescanBusLight() {
+    // Состав шины меняется — старые значения кеша больше не соответствуют
+    // индексам, сбрасываем до следующего чтения
+    for (uint8_t i = 0; i < MAX_BUS_DEVICES; i++) {
+      _busTemps[i] = DEVICE_DISCONNECTED_C;
+      _busFails[i] = 0;
+    }
+
     _allAddrsCount = 0;
     uint8_t count = _sensors.getDeviceCount();
 
@@ -128,12 +157,44 @@ public:
   }
 
   // Read temperatures from previous async conversion
+  // Читает шину РОВНО ОДИН раз за цикл и раскладывает результат по кешу.
+  // Раньше каждое обращение к getRawTemp() лезло на шину заново, и при
+  // 8 датчиках одна рассылка стоила ~90 мс блокировки (а во время
+  // калибровки вдвое больше — дельты читали те же значения повторно).
   void readTemperatures() {
-    for (int i = 0; i < NUM_SENSORS; i++) {
-      if (_found[i]) {
-        _temperatures[i] = _sensors.getTempC(_expectedAddrs[i]);
+    for (uint8_t i = 0; i < _allAddrsCount; i++) {
+      float t = _sensors.getTempC(_allAddrs[i]);
+
+      // Одна повторная попытка: сбой CRC на шине обычно разовый
+      if (t == DEVICE_DISCONNECTED_C) {
+        t = _sensors.getTempC(_allAddrs[i]);
+      }
+
+      if (t != DEVICE_DISCONNECTED_C) {
+        _busTemps[i] = t;
+        _busFails[i] = 0;
+      } else if (_busFails[i] < MAX_READ_FAILURES) {
+        // Держим последнее валидное значение — не мигаем N/D из-за помехи
+        _busFails[i]++;
+        if (_busFails[i] == MAX_READ_FAILURES) {
+          Log.printf("[DS18B20] Bus[%d]: %d read failures in a row -> N/D\n",
+            i, _busFails[i]);
+          _busTemps[i] = DEVICE_DISCONNECTED_C;
+        }
       } else {
-        _temperatures[i] = DEVICE_DISCONNECTED_C;
+        _busTemps[i] = DEVICE_DISCONNECTED_C;
+      }
+    }
+
+    for (int i = 0; i < NUM_SENSORS; i++) {
+      _temperatures[i] = DEVICE_DISCONNECTED_C;
+      if (!_found[i]) continue;
+
+      int busIdx = findBusIndex(_expectedAddrs[i]);
+      if (busIdx >= 0) {
+        _temperatures[i] = _busTemps[busIdx];      // из кеша, без обращения к шине
+      } else {
+        _temperatures[i] = _sensors.getTempC(_expectedAddrs[i]);
       }
     }
 
@@ -144,7 +205,7 @@ public:
       // базовые температуры переснимались бы каждый цикл.
       if (!_calibrateBaseReady) {
         for (uint8_t i = 0; i < _allAddrsCount; i++) {
-          _calibrateBaseTemp[i] = _sensors.getTempC(_allAddrs[i]);
+          _calibrateBaseTemp[i] = _busTemps[i];
         }
         _calibrateBaseReady = true;
       }
@@ -249,7 +310,7 @@ public:
 
   float getRawTemp(uint8_t busIndex) {
     if (busIndex >= _allAddrsCount) return DEVICE_DISCONNECTED_C;
-    return _sensors.getTempC(_allAddrs[busIndex]);
+    return _busTemps[busIndex];   // кеш, заполняется в readTemperatures()
   }
 
   float getCalibrateBaseTemp(uint8_t busIndex) {
@@ -343,7 +404,7 @@ private:
     }
 
     for (uint8_t i = 0; i < _allAddrsCount; i++) {
-      float currentTemp = _sensors.getTempC(_allAddrs[i]);
+      float currentTemp = _busTemps[i];
       float base = _calibrateBaseTemp[i];
       if (base == DEVICE_DISCONNECTED_C || currentTemp == DEVICE_DISCONNECTED_C) continue;
       float delta = currentTemp - base;
@@ -364,6 +425,13 @@ private:
         return;
       }
     }
+  }
+
+  int findBusIndex(const uint8_t* addr) {
+    for (uint8_t i = 0; i < _allAddrsCount; i++) {
+      if (memcmp(addr, _allAddrs[i], 8) == 0) return i;
+    }
+    return -1;
   }
 
   int findMapping(DeviceAddress addr) {

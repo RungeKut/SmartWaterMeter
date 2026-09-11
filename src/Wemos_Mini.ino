@@ -322,7 +322,10 @@ void loop() {
   // ---- DS18B20: asynchronous conversion cycle ----
   // Phase 1: start conversion (triggers ~750ms on bus)
   // Phase 2: read results (next loop cycle)
-  uint32_t sensorInterval = tempSensors.isCalibrating() ? 1000 : 2000;
+  // Конверсия DS18B20 при 12 битах длится ~750 мс, результат читаем через
+  // >=850 мс. С setWaitForConversion(false) запуск стоит ~2 мс, поэтому
+  // период 1000 мс укладывается с запасом: цикл получается ~1010 мс.
+  uint32_t sensorInterval = 1000;
 
   if (!sensorConvPending && now - lastSensorRead > sensorInterval) {
     // Phase 1: start new conversion
