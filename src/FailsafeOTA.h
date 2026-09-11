@@ -49,6 +49,27 @@
 #define RTC_MAGIC_RETRY       0xDEAD0002  // старт после перезагрузки по таймауту
 #define RTC_MAGIC_NORMAL      0x00000000  // обычный старт
 
+// КРИТИЧНО: смещение в пользовательской RTC-памяти (в 4-байтовых блоках).
+//
+// Первые 128 байт (блоки 0..31) занимает команда загрузчика eboot, которую
+// Updater::end() записывает при OTA. Цитата из ядра ESP8266 (Esp.cpp):
+//
+//   "If the Updater class is in play, e.g.: the application uses OTA, the
+//    eboot command will be stored into the first 128 bytes of user data,
+//    then it will be retrieved by eboot on boot. That means that user data
+//    present there will be lost."
+//
+// Порядок вызовов в ArduinoOTA::_runUpdate():
+//   1. Update.end()      -> пишет команду eboot ACTION_COPY_RAW
+//   2. _end_callback()   -> наш updateFirmware()
+//   3. ESP.restart()
+//
+// Запись флага в блок 0 затирала магическое число команды eboot. Загрузчик
+// не находил валидной команды, образ из временной области не копировался, и
+// плата поднималась на СТАРОЙ прошивке — при этом OTA рапортовал "Result: OK".
+// Именно поэтому OTA в этом проекте никогда не применялся.
+#define RTC_FLAG_OFFSET       32          // блок 32 = байт 128, сразу за eboot
+
 class FailsafeOTA {
 private:
   uint32_t _bootTime;
@@ -58,12 +79,12 @@ private:
   bool _retryExhausted;         // перезагрузка уже была, больше не пробуем
 
   static void writeRTC(uint32_t val) {
-    ESP.rtcUserMemoryWrite(0, &val, sizeof(val));
+    ESP.rtcUserMemoryWrite(RTC_FLAG_OFFSET, &val, sizeof(val));
   }
 
   static uint32_t readRTC() {
     uint32_t val = 0;
-    ESP.rtcUserMemoryRead(0, &val, sizeof(val));
+    ESP.rtcUserMemoryRead(RTC_FLAG_OFFSET, &val, sizeof(val));
     return val;
   }
 
