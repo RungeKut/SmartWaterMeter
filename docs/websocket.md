@@ -116,7 +116,8 @@
   "calibrate_index": -1,
   "calibrate_remaining": 0,
   "sensorMapping": [
-    { "name": "Cold", "found": true, "temp": 22.5 }
+    { "name": "Cold", "found": true, "assigned": true,
+      "address": "287C7C3C000000ED", "temp": 22.5 }
   ],
   "busDevices": [
     { "index": 0, "address": "287C7C3C000000ED", "temp": 22.5 }
@@ -125,6 +126,8 @@
 ```
 
 > **Примечание:** во время калибровки в каждый объект `busDevices[]` добавляются поля `baseTemp` и `delta`.
+
+> В `sensorMapping` поле `address` присутствует, если за каналом закреплён осмысленный адрес (`assigned: true`) — **в том числе когда датчик не отвечает**. По этому адресу пользователь и находит нужный датчик, чтобы подключить его.
 
 ### `calibrationStarted`
 

@@ -52,7 +52,8 @@ private:
   float _calibrateBaseTemp[MAX_BUS_DEVICES];
   DeviceAddress _allAddrs[MAX_BUS_DEVICES];
   float _busTemps[MAX_BUS_DEVICES];   // кеш: заполняется раз за цикл
-  uint8_t _busFails[MAX_BUS_DEVICES]; // подряд неудачных чтений
+  uint8_t _busFails[MAX_BUS_DEVICES]; // подряд неудачных чтений по шине
+  uint8_t _chFails[NUM_SENSORS];      // подряд неудачных чтений по каналу
   uint8_t _allAddrsCount;
   uint32_t _calibrateStartTime;
   bool _calibrateBaseReady;
@@ -68,6 +69,7 @@ public:
     for (int i = 0; i < NUM_SENSORS; i++) {
       _temperatures[i] = DEVICE_DISCONNECTED_C;
       _found[i] = false;
+      _chFails[i] = 0;
     }
     for (int i = 0; i < MAX_BUS_DEVICES; i++) {
       _calibrateBaseTemp[i] = DEVICE_DISCONNECTED_C;
@@ -186,15 +188,47 @@ public:
       }
     }
 
+    // Присутствие канала определяется тем, ЧИТАЕТСЯ ли он, а не тем,
+    // нашёлся ли он поиском по шине. Это принципиально: подвисающий
+    // датчик регулярно не попадает в getAddress()-поиск, но на прямой
+    // запрос по адресу (MatchROM) отвечает нормально. Если привязать
+    // признак к поиску, такой датчик числился бы Missing большую часть
+    // времени, показывая при этом корректную температуру.
+    //
+    // Побочный эффект — то, чего раньше не хватало: подключённый на ходу
+    // датчик становится Found сам, без перезагрузки.
     for (int i = 0; i < NUM_SENSORS; i++) {
-      _temperatures[i] = DEVICE_DISCONNECTED_C;
-      if (!_found[i]) continue;
+      if (!hasAssignedAddr(i)) {
+        _temperatures[i] = DEVICE_DISCONNECTED_C;
+        _found[i] = false;
+        _chFails[i] = 0;
+        continue;
+      }
 
       int busIdx = findBusIndex(_expectedAddrs[i]);
+      float t;
       if (busIdx >= 0) {
-        _temperatures[i] = _busTemps[busIdx];      // из кеша, без обращения к шине
+        t = _busTemps[busIdx];              // из кеша, шину не трогаем
       } else {
-        _temperatures[i] = _sensors.getTempC(_expectedAddrs[i]);
+        // В последний поиск не попал — пробуем прямым запросом по адресу
+        t = _sensors.getTempC(_expectedAddrs[i]);
+        if (t == DEVICE_DISCONNECTED_C) t = _sensors.getTempC(_expectedAddrs[i]);
+      }
+
+      if (t != DEVICE_DISCONNECTED_C) {
+        _temperatures[i] = t;
+        _found[i] = true;
+        _chFails[i] = 0;
+      } else if (_chFails[i] < MAX_READ_FAILURES) {
+        _chFails[i]++;                      // держим прежнее значение
+        if (_chFails[i] == MAX_READ_FAILURES) {
+          Log.printf("[DS18B20] %s: not responding -> Missing\n", sensorName(i));
+          _temperatures[i] = DEVICE_DISCONNECTED_C;
+          _found[i] = false;
+        }
+      } else {
+        _temperatures[i] = DEVICE_DISCONNECTED_C;
+        _found[i] = false;
       }
     }
 
@@ -344,6 +378,25 @@ public:
       case 3: return "Supply";
       default: return "?";
     }
+  }
+
+  // Адрес, закреплённый за логическим каналом (даже если датчика нет на шине)
+  const uint8_t* getExpectedAddr(int index) {
+    return (index >= 0 && index < NUM_SENSORS) ? _expectedAddrs[index] : nullptr;
+  }
+
+  // Закреплён ли за каналом осмысленный адрес.
+  // Проверяем CRC: в secrets.h по умолчанию лежат заглушки вида
+  // {0x28, 0, 0, 0, 0, 0, 0, 0}, которые адресом не являются.
+  bool hasAssignedAddr(int index) {
+    if (index < 0 || index >= NUM_SENSORS) return false;
+    const uint8_t* a = _expectedAddrs[index];
+    bool allZero = true;
+    for (int i = 0; i < 8; i++) {
+      if (a[i] != 0) { allZero = false; break; }
+    }
+    if (allZero) return false;
+    return OneWire::crc8(a, 7) == a[7];
   }
 
   uint8_t getAllAddrCount() { return _allAddrsCount; }

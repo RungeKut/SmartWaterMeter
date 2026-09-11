@@ -167,6 +167,16 @@ void fillSensorState(JsonDocument &doc) {
     sm["name"] = TemperatureSensors::sensorName(i);
     sm["found"] = tempSensors.isFound(i);
     sm["temp"] = tempSensors.getTemp(i);
+    // Адрес отдаём всегда, в том числе для отсутствующих датчиков:
+    // по нему пользователь найдёт нужный датчик и подключит его
+    sm["assigned"] = tempSensors.hasAssignedAddr(i);
+    const uint8_t* ea = tempSensors.getExpectedAddr(i);
+    if (ea && tempSensors.hasAssignedAddr(i)) {
+      char eaStr[17];
+      for (int j = 0; j < 8; j++) sprintf(eaStr + j * 2, "%02X", ea[j]);
+      eaStr[16] = 0;
+      sm["address"] = eaStr;
+    }
   }
 
   JsonArray bus = doc["busDevices"].to<JsonArray>();

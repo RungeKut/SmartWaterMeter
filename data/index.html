@@ -171,6 +171,29 @@ label { font-size: 12px; color: var(--text-secondary); display: block; margin-bo
   font-size: 13px;
 }
 .ota-banner .countdown { font-weight: 700; color: var(--orange); }
+.addr {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  letter-spacing: .3px;
+  color: var(--text-secondary);
+}
+.addr-row { transition: background .15s, box-shadow .15s; }
+.addr-row.hl {
+  background: rgba(25,118,210,.14);
+  box-shadow: inset 0 0 0 2px var(--primary);
+  border-radius: 6px;
+}
+.chip {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: rgba(25,118,210,.15);
+  color: var(--primary);
+  margin-left: 6px;
+  vertical-align: middle;
+}
 .section-title { font-size: 12px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .5px; margin: 16px 0 8px; }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -649,6 +672,22 @@ function testEmail() {
   showToast('Sending test email...');
 }
 
+// ======== Подсветка связанных строк (канал <-> датчик на шине) ========
+// Таблицы перерисовываются раз в секунду, поэтому текущий адрес храним
+// в переменной и применяем класс заново после каждой отрисовки.
+let hlAddr = null;
+
+function setHl(addr) {
+  hlAddr = addr || null;
+  applyHl();
+}
+
+function applyHl() {
+  document.querySelectorAll('.addr-row').forEach(el => {
+    el.classList.toggle('hl', !!hlAddr && el.dataset.addr === hlAddr);
+  });
+}
+
 // ======== Calibrate ========
 function updateCalibrateBusTable() {
   const container = document.getElementById('busSensorsTable');
@@ -679,15 +718,21 @@ function updateCalibrateBusTable() {
         'line-height:1;font-size:18px;margin:0" title="Assign to selected channel" ' +
         'onclick="assignSensor(' + b.index + ')">+</button></td>'
       : '';
-    html += '<tr style="border-bottom:1px solid var(--border)">' +
+    // За каким каналом закреплён этот датчик
+    const owner = (state.sensorMapping || []).find(s => s.address === addr);
+    const chip = owner ? '<span class="chip">' + owner.name + '</span>' : '';
+    html += '<tr class="addr-row" data-addr="' + addr + '"' +
+      ' onmouseenter="setHl(this.dataset.addr)" onmouseleave="setHl(null)"' +
+      ' style="border-bottom:1px solid var(--border)">' +
       '<td style="padding:6px 4px">' + b.index + '</td>' +
-      '<td style="padding:6px 4px;font-family:monospace;font-size:12px">' + addr + '</td>' +
+      '<td style="padding:6px 4px"><span class="addr">' + addr + '</span>' + chip + '</td>' +
       '<td style="padding:6px 4px;text-align:right;font-weight:600">' + temp + '</td>' +
       '<td style="padding:6px 4px;text-align:right;' + deltaStyle + '">' + delta + '</td>' +
       assignBtn + '</tr>';
   });
   html += '</table>';
   container.innerHTML = html;
+  applyHl();
 }
 
 function updateCalibrate() {
@@ -701,18 +746,38 @@ function updateCalibrate() {
   let html = '';
   mapping.forEach((s, i) => {
     const temp = s.temp !== undefined && s.temp > -50 ? s.temp.toFixed(1) + '°C' : 'N/D';
-    const found = s.found ? '<span class="badge ok">Found</span>' : '<span class="badge err">Missing</span>';
     const disabled = cal ? 'disabled' : '';
 
-    html += '<div style="padding:8px 0;border-bottom:1px solid var(--border)">' +
-      '<div style="display:flex;justify-content:space-between;align-items:center">' +
-      '<div><strong>' + s.name + '</strong> ' + found + '<br><span style="font-size:12px;color:var(--text-secondary)">' + temp + '</span></div>' +
-      '<button class="btn btn-primary" style="width:auto;padding:6px 16px" onclick="startCalibration(' + i + ')" ' + disabled + '>' +
+    // Три состояния: датчик на месте / назначен, но не найден / не назначен
+    let badge, addrLine;
+    if (s.found) {
+      badge = '<span class="badge ok">Found</span>';
+      addrLine = '<span class="addr">' + s.address + '</span>';
+    } else if (s.assigned) {
+      badge = '<span class="badge err">Missing</span>';
+      // Адрес показываем и для отсутствующего датчика — по нему его найти и подключить
+      addrLine = '<span class="addr">' + s.address + '</span>' +
+        '<br><span style="font-size:11px;color:var(--red)">not on the bus — connect this sensor</span>';
+    } else {
+      badge = '<span class="badge warn">Not assigned</span>';
+      addrLine = '<span class="addr">no address</span>';
+    }
+
+    const addrAttr = s.address || '';
+    html += '<div class="addr-row" data-addr="' + addrAttr + '"' +
+      ' onmouseenter="setHl(this.dataset.addr)" onmouseleave="setHl(null)"' +
+      ' style="padding:8px 6px;border-bottom:1px solid var(--border)">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px">' +
+      '<div style="min-width:0"><strong>' + s.name + '</strong> ' + badge +
+      '<br><span style="font-size:12px;color:var(--text-secondary)">' + temp + '</span>' +
+      '<br>' + addrLine + '</div>' +
+      '<button class="btn btn-primary" style="width:auto;padding:6px 16px;flex:none" onclick="startCalibration(' + i + ')" ' + disabled + '>' +
       (cal && calIdx === i ? 'Calibrating...' : 'Calibrate') +
       '</button></div></div>';
   });
 
   container.innerHTML = html;
+  applyHl();
 
   // Status
   const statusDiv = document.getElementById('calibrateStatus');
