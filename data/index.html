@@ -194,6 +194,38 @@ label { font-size: 12px; color: var(--text-secondary); display: block; margin-bo
   margin-left: 6px;
   vertical-align: middle;
 }
+.seg {
+  display: flex;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+.seg button {
+  flex: 1;
+  padding: 9px 4px;
+  font-size: 13px;
+  font-weight: 500;
+  background: transparent;
+  color: var(--text-secondary);
+  border: none;
+  border-right: 1px solid var(--border);
+  cursor: pointer;
+  transition: background .15s, color .15s;
+  -webkit-tap-highlight-color: transparent;
+}
+.seg button:last-child { border-right: none; }
+.seg button.active { background: var(--primary); color: #fff; }
+.hint {
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 8px 10px;
+  border-radius: 8px;
+  margin-top: 4px;
+}
+.hint.info { background: rgba(25,118,210,.1); color: var(--primary); }
+.hint.warn { background: #FFF3E0; color: #E65100; }
 .section-title { font-size: 12px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .5px; margin: 16px 0 8px; }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -296,24 +328,23 @@ label { font-size: 12px; color: var(--text-secondary); display: block; margin-bo
 
   <div class="section-title">Report Schedule</div>
   <div class="card">
-    <label>Time (HH:MM)</label>
-    <div style="display:flex;gap:8px">
-      <input id="cfgReportHour" type="number" min="0" max="23" placeholder="09" style="flex:1">
-      <input id="cfgReportMin" type="number" min="0" max="59" placeholder="00" style="flex:1">
-    </div>
     <label>Repeat</label>
-    <select id="cfgReportSchedule">
-      <option value="0">Daily</option>
-      <option value="1">Weekly</option>
-      <option value="2">Monthly</option>
-    </select>
-    <label id="cfgDayLabel">Day of week</label>
-    <select id="cfgReportDay">
-      <option value="0">Sunday</option><option value="1">Monday</option>
-      <option value="2">Tuesday</option><option value="3">Wednesday</option>
-      <option value="4">Thursday</option><option value="5">Friday</option>
-      <option value="6">Saturday</option>
-    </select>
+    <div class="seg" id="schedSeg">
+      <button type="button" data-sched="0">Daily</button>
+      <button type="button" data-sched="1">Weekly</button>
+      <button type="button" data-sched="2">Monthly</button>
+    </div>
+
+    <div id="schedDayWrap">
+      <label id="cfgDayLabel">Day of week</label>
+      <select id="cfgReportDay"></select>
+    </div>
+
+    <label>Time</label>
+    <input id="cfgReportTime" type="time" value="09:00">
+
+    <div id="schedPreview" class="hint info"></div>
+    <div id="schedWarn" class="hint warn" style="display:none"></div>
   </div>
 
   <div class="section-title">MQTT / Home Assistant</div>
@@ -463,6 +494,7 @@ function handleMessage(msg) {
         Object.assign(state, msg);
         updateDashboard();
         updateMqttStatus();
+        updateSchedPreview();
         updateCalibrate();
         updateCalibrateBusTable();
         updateOTABanner();
@@ -603,14 +635,12 @@ function updateSettings() {
   document.getElementById('cfgSmtpPort').value = cfg.smtpPort || 465;
   document.getElementById('cfgSmtpEmail').value = cfg.smtpEmail || '';
   document.getElementById('cfgSmtpRecipient').value = cfg.smtpRecipient || '';
-  document.getElementById('cfgReportHour').value = cfg.reportHour !== undefined ? cfg.reportHour : 9;
-  document.getElementById('cfgReportMin').value = cfg.reportMinute !== undefined ? cfg.reportMinute : 0;
-  document.getElementById('cfgReportSchedule').value = cfg.reportSchedule !== undefined ? cfg.reportSchedule : 0;
-  
-  // Day field
-  const sched = parseInt(document.getElementById('cfgReportSchedule').value);
-  document.getElementById('cfgDayLabel').textContent = sched === 1 ? 'Day of week' : 'Day of month';
-  document.getElementById('cfgReportDay').value = cfg.reportDay !== undefined ? cfg.reportDay : 0;
+  const rh = cfg.reportHour !== undefined ? cfg.reportHour : 9;
+  const rm = cfg.reportMinute !== undefined ? cfg.reportMinute : 0;
+  document.getElementById('cfgReportTime').value =
+    String(rh).padStart(2,'0') + ':' + String(rm).padStart(2,'0');
+  // setSchedMode перестраивает список дней ПЕРЕД установкой значения
+  setSchedMode(cfg.reportSchedule !== undefined ? cfg.reportSchedule : 0, cfg.reportDay);
 
   document.getElementById('cfgMeterHot').value = cfg.meterHotM3 !== undefined ? cfg.meterHotM3 : '';
   document.getElementById('cfgMeterCold').value = cfg.meterColdM3 !== undefined ? cfg.meterColdM3 : '';
@@ -675,23 +705,133 @@ function updateMeterDiag() {
   el.innerHTML = html + '</table>';
 }
 
-document.getElementById('cfgReportSchedule').addEventListener('change', function() {
-  const label = document.getElementById('cfgDayLabel');
-  label.textContent = this.value === '1' ? 'Day of week' : 'Day of month';
+// ======== Report schedule ========
+// Текущий выбор храним в переменной, а не читаем из select: повтор
+// задаётся сегментированным переключателем.
+let schedMode = 0;            // 0=daily, 1=weekly, 2=monthly
+const WEEKDAYS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+
+// Список дней ОБЯЗАН перестраиваться и при загрузке настроек, а не
+// только по change. Раньше этого не было: при сохранённом месячном
+// расписании в списке оставались дни недели, значение 15 не находилось,
+// селект показывал Sunday — и следующее сохранение записывало 0.
+function rebuildDaySelect(mode, value) {
+  const wrap = document.getElementById('schedDayWrap');
   const sel = document.getElementById('cfgReportDay');
-  if (this.value === '2') {
-    sel.innerHTML = '';
-    for (let i = 1; i <= 28; i++) {
-      sel.innerHTML += '<option value="' + i + '">' + i + '</option>';
-    }
-  } else {
-    sel.innerHTML = `
-      <option value="0">Sunday</option><option value="1">Monday</option>
-      <option value="2">Tuesday</option><option value="3">Wednesday</option>
-      <option value="4">Thursday</option><option value="5">Friday</option>
-      <option value="6">Saturday</option>`;
+  const label = document.getElementById('cfgDayLabel');
+
+  if (mode === 0) {
+    wrap.style.display = 'none';    // для ежедневного день не нужен
+    return;
   }
+  wrap.style.display = '';
+
+  let html = '';
+  if (mode === 1) {
+    label.textContent = 'Day of week';
+    WEEKDAYS.forEach((d, i) => { html += '<option value="' + i + '">' + d + '</option>'; });
+  } else {
+    label.textContent = 'Day of month';
+    for (let i = 1; i <= 28; i++) html += '<option value="' + i + '">' + i + '</option>';
+  }
+  sel.innerHTML = html;
+
+  // Значение выставляем ПОСЛЕ перестроения списка
+  const fallback = (mode === 1) ? 0 : 1;
+  const v = (value === undefined || value === null) ? fallback : value;
+  sel.value = String(v);
+  if (sel.selectedIndex < 0) sel.value = String(fallback);
+}
+
+function setSchedMode(mode, dayValue) {
+  schedMode = mode;
+  document.querySelectorAll('#schedSeg button').forEach(b => {
+    b.classList.toggle('active', parseInt(b.dataset.sched) === mode);
+  });
+  rebuildDaySelect(mode, dayValue);
+  updateSchedPreview();
+}
+
+document.querySelectorAll('#schedSeg button').forEach(b => {
+  b.addEventListener('click', () => setSchedMode(parseInt(b.dataset.sched)));
 });
+document.getElementById('cfgReportTime').addEventListener('change', updateSchedPreview);
+document.getElementById('cfgReportDay').addEventListener('change', updateSchedPreview);
+
+function getReportTime() {
+  const v = document.getElementById('cfgReportTime').value || '09:00';
+  const parts = v.split(':');
+  return { h: parseInt(parts[0]) || 0, m: parseInt(parts[1]) || 0 };
+}
+
+// Когда отчёт уйдёт в следующий раз. Считаем от времени УСТРОЙСТВА,
+// а не браузера: расписание проверяется на плате.
+function nextReportDate() {
+  if (!state || !state.time_valid || state.time_year === undefined) return null;
+  const now = new Date(state.time_year, state.time_mon - 1, state.time_mday,
+                       state.time_hour, state.time_min, state.time_sec);
+  const t = getReportTime();
+  const day = parseInt(document.getElementById('cfgReportDay').value);
+
+  if (schedMode === 0) {
+    let d = new Date(now.getFullYear(), now.getMonth(), now.getDate(), t.h, t.m);
+    if (d <= now) d.setDate(d.getDate() + 1);
+    return d;
+  }
+  if (schedMode === 1) {
+    let d = new Date(now.getFullYear(), now.getMonth(), now.getDate(), t.h, t.m);
+    let delta = (day - d.getDay() + 7) % 7;
+    if (delta === 0 && d <= now) delta = 7;
+    d.setDate(d.getDate() + delta);
+    return d;
+  }
+  let d = new Date(now.getFullYear(), now.getMonth(), day, t.h, t.m);
+  if (d <= now) d = new Date(now.getFullYear(), now.getMonth() + 1, day, t.h, t.m);
+  return d;
+}
+
+function updateSchedPreview() {
+  const prev = document.getElementById('schedPreview');
+  const warn = document.getElementById('schedWarn');
+  if (!prev) return;
+
+  const t = getReportTime();
+  const hhmm = String(t.h).padStart(2,'0') + ':' + String(t.m).padStart(2,'0');
+  const day = parseInt(document.getElementById('cfgReportDay').value);
+
+  let rule;
+  if (schedMode === 0) rule = 'Every day at ' + hhmm;
+  else if (schedMode === 1) rule = 'Every ' + (WEEKDAYS[day] || '?') + ' at ' + hhmm;
+  else rule = 'Day ' + day + ' of each month at ' + hhmm;
+
+  const next = nextReportDate();
+  if (next) {
+    const opts = { weekday:'short', day:'numeric', month:'short' };
+    rule += ' &middot; next: ' + next.toLocaleDateString(undefined, opts) +
+            ' ' + String(next.getHours()).padStart(2,'0') + ':' +
+            String(next.getMinutes()).padStart(2,'0');
+  }
+  if (schedMode === 2) {
+    rule += '<br><span style="opacity:.8">Days are capped at 28 so the report never skips a month.</span>';
+  }
+  prev.innerHTML = rule;
+
+  // Две причины, по которым отчёт молча не уйдёт
+  const problems = [];
+  const cfg = (state && state.config) || {};
+  if (!cfg.smtpEmail || !cfg.smtpRecipient) {
+    problems.push('SMTP is not configured — reports will not be sent.');
+  }
+  if (state && !state.time_valid) {
+    problems.push('No time sync yet — the schedule cannot run until the clock is set.');
+  }
+  if (problems.length) {
+    warn.innerHTML = problems.join('<br>');
+    warn.style.display = '';
+  } else {
+    warn.style.display = 'none';
+  }
+}
 
 function getConfig() {
   return {
@@ -709,10 +849,10 @@ function getConfig() {
     smtpEmail: document.getElementById('cfgSmtpEmail').value,
     smtpPass: document.getElementById('cfgSmtpPass').value,
     smtpRecipient: document.getElementById('cfgSmtpRecipient').value,
-    reportHour: parseInt(document.getElementById('cfgReportHour').value) || 9,
-    reportMinute: parseInt(document.getElementById('cfgReportMin').value) || 0,
-    reportSchedule: parseInt(document.getElementById('cfgReportSchedule').value) || 0,
-    reportDay: parseInt(document.getElementById('cfgReportDay').value) || 0,
+    reportHour: getReportTime().h,
+    reportMinute: getReportTime().m,
+    reportSchedule: schedMode,
+    reportDay: schedMode === 0 ? 0 : (parseInt(document.getElementById('cfgReportDay').value) || 0),
     meterHotM3: parseFloat(document.getElementById('cfgMeterHot').value) || 0,
     meterColdM3: parseFloat(document.getElementById('cfgMeterCold').value) || 0,
     litersPerPulseHot: parseFloat(document.getElementById('cfgLPH').value) || 1.0,
