@@ -439,7 +439,6 @@ public:
 
 private:
   void loadExpectedAddrs() {
-    bool eepromChanged = false;
     for (int i = 0; i < NUM_SENSORS; i++) {
       bool useEeprom = false;
       if (_config) {
@@ -462,43 +461,58 @@ private:
       Log.println();
     }
 
-    // After initial mapping, re-check each EEPROM address individually:
-    // if EEPROM address was used but sensor not found, try secrets.h fallback
+    // Резервный адрес из secrets.h подставляется, только если датчик по
+    // адресу из EEPROM не найден И запасной адрес реально существует на
+    // шине. Иначе калибровка остаётся нетронутой.
+    //
+    // ПОЧЕМУ ЭТО ВАЖНО. Раньше здесь было иначе: при любом ненайденном
+    // датчике адрес перезаписывался заглушкой из secrets.h, а затем ВЕСЬ
+    // набор адресов сохранялся в EEPROM. Достаточно было отвалиться шине
+    // (обрыв провода, пропажа питания датчиков) — и при ближайшей
+    // перезагрузке калибровка всех четырёх каналов затиралась
+    // заглушками вида {0x28, 0, 0, ...}. Восстановить её можно было
+    // только повторной калибровкой.
+    if (_allAddrsCount == 0) {
+      Log.println("[DS18B20] Шина пуста — адреса в EEPROM не трогаем");
+      return;
+    }
+
+    bool eepromChanged = false;
     for (int i = 0; i < NUM_SENSORS; i++) {
+      if (_found[i]) continue;
+      if (!_config) continue;
+
+      // Был ли адрес взят из EEPROM (ненулевой)
       bool isFromEeprom = false;
-      if (_config) {
-        isFromEeprom = true;
-        for (int j = 0; j < 8; j++) {
-          if (_config->data.sensorAddrs[i][j] != 0) break;
-          if (j == 7) isFromEeprom = false;
-        }
+      for (int j = 0; j < 8; j++) {
+        if (_config->data.sensorAddrs[i][j] != 0) { isFromEeprom = true; break; }
       }
-      if (isFromEeprom && !_found[i]) {
-        // EEPROM address didn't match — try secrets.h
-        Log.printf("[DS18B20] [%d] EEPROM addr not found, trying secrets.h...\n", i);
-        memcpy(_expectedAddrs[i], SENSOR_ADDR[i], 8);
-        // Remap with new address
-        for (uint8_t di = 0; di < _allAddrsCount; di++) {
-          if (memcmp(_allAddrs[di], _expectedAddrs[i], 8) == 0) {
-            _found[i] = true;
-            Log.printf("[DS18B20] [%d] Found with secrets.h address!\n", i);
-            break;
-          }
-        }
-        if (!_found[i]) {
-          Log.printf("[DS18B20] [%d] Still not found with secrets.h either\n", i);
-        }
-        eepromChanged = true;
+      if (!isFromEeprom) continue;
+
+      // Заглушки из secrets.h адресом не являются — проверяем CRC
+      const uint8_t *fallback = SENSOR_ADDR[i];
+      if (OneWire::crc8(fallback, 7) != fallback[7]) continue;
+
+      // Есть ли запасной адрес на шине
+      int busIdx = -1;
+      for (uint8_t di = 0; di < _allAddrsCount; di++) {
+        if (memcmp(_allAddrs[di], fallback, 8) == 0) { busIdx = di; break; }
       }
+      if (busIdx < 0) {
+        Log.printf("[DS18B20] [%d] адрес из EEPROM не найден, запасной тоже\n", i);
+        continue;   // ничего не перезаписываем
+      }
+
+      memcpy(_expectedAddrs[i], fallback, 8);
+      _found[i] = true;
+      memcpy(_config->data.sensorAddrs[i], fallback, 8);
+      eepromChanged = true;
+      Log.printf("[DS18B20] [%d] переключён на адрес из secrets.h\n", i);
     }
 
     if (eepromChanged && _config) {
-      // Save updated addresses back to EEPROM
-      for (int i = 0; i < NUM_SENSORS; i++) {
-        memcpy(_config->data.sensorAddrs[i], _expectedAddrs[i], 8);
-      }
       _config->save();
-      Log.println("[DS18B20] EEPROM addresses updated from secrets.h");
+      Log.println("[DS18B20] Адреса в EEPROM обновлены (только найденные датчики)");
     }
   }
 

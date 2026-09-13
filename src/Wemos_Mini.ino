@@ -35,6 +35,7 @@
 #include "StatusLED.h"
 #include "TelnetSerial.h"
 #include "FailsafeOTA.h"
+#include "MqttClient.h"
 
 // SMTP
 #include <ESP_Mail_Client.h>
@@ -56,6 +57,8 @@ TemperatureSensors tempSensors(ONE_WIRE_BUS, &config);
 StatusLED led;
 TelnetSerial telnet;
 FailsafeOTA failsafe;
+MqttClient mqtt;
+uint8_t deviceMac[6];
 
 AsyncWebServer server(80);
 AsyncWebSocket ws("/ws");
@@ -111,6 +114,8 @@ void fillSensorState(JsonDocument &doc);
 void sanitizeDeviceName(const char *src, size_t srcSize, char *dst, size_t dstSize);
 String jsonTemp(float t);
 void applyDeviceName();
+void onMqttCommand(const String &cmd, const String &value);
+void fillMqttPayload(MqttClient::Payload &p);
 
 // ==================== Helpers ====================
 
@@ -195,6 +200,8 @@ void fillSystemState(JsonDocument &doc) {
   }
   doc["ota_pending"] = failsafe.isPending();
   doc["ota_remaining"] = failsafe.remainingSec();
+  doc["mqtt_enabled"] = mqtt.isEnabled();
+  doc["mqtt_connected"] = mqtt.isConnected();
 }
 
 // Температуры, счётчики и карта шины OneWire
@@ -252,6 +259,51 @@ void fillSensorState(JsonDocument &doc) {
   }
 }
 
+// Команды из Home Assistant (кнопки и числовые настройки).
+// Тема вида smartwatermeter/<MAC3>/cmd/<команда>.
+void onMqttCommand(const String &cmd, const String &value) {
+  if (cmd == "restart") {
+    needsRestart = true;
+  } else if (cmd == "confirm_ota") {
+    failsafe.confirm();
+  } else if (cmd == "debounce_closed" || cmd == "debounce_open") {
+    long v = value.toInt();
+    if (v < 0) v = 0;
+    if (v > 60000) v = 60000;
+    if (cmd == "debounce_closed") config.data.debounceClosedMs = (uint16_t)v;
+    else                          config.data.debounceOpenMs = (uint16_t)v;
+    config.save();
+    Log.printf("[MQTT] %s set to %ld ms\n", cmd.c_str(), v);
+  } else {
+    Log.printf("[MQTT] Unknown command: %s\n", cmd.c_str());
+  }
+}
+
+// Снимок состояния для MQTT. Держим сборку здесь, чтобы модуль
+// MqttClient не зависел от остального проекта.
+void fillMqttPayload(MqttClient::Payload &p) {
+  p.tempCold   = tempSensors.getTempHVS();
+  p.tempHot    = tempSensors.getTempGVS();
+  p.tempSupply = tempSensors.getTempSupply();
+  p.tempReturn = tempSensors.getTempReturn();
+  p.tempColdOk   = tempSensors.isFound(0);
+  p.tempHotOk    = tempSensors.isFound(1);
+  p.tempReturnOk = tempSensors.isFound(2);
+  p.tempSupplyOk = tempSensors.isFound(3);
+
+  p.meterHotM3  = config.data.meterHotM3;
+  p.meterColdM3 = config.data.meterColdM3;
+  p.reedHotClosed  = meterHot.isClosed();
+  p.reedColdClosed = meterCold.isClosed();
+
+  p.rssi = wifiConnected ? WiFi.RSSI() : 0;
+  p.uptimeSec = millis() / 1000;
+  p.freeHeap = ESP.getFreeHeap();
+
+  p.debounceClosedMs = config.data.debounceClosedMs;
+  p.debounceOpenMs = config.data.debounceOpenMs;
+}
+
 // ==================== SETUP ====================
 void setup() {
   Serial.begin(115200);
@@ -262,6 +314,7 @@ void setup() {
   // Unique device name from MAC
   uint8_t mac[6];
   WiFi.macAddress(mac);
+  memcpy(deviceMac, mac, 6);
   snprintf(defaultDeviceName, sizeof(defaultDeviceName), "%s-%02X%02X%02X",
     AP_SSID_PREFIX, mac[3], mac[4], mac[5]);
 
@@ -335,6 +388,9 @@ void setup() {
   setupHttpRoutes();
   server.begin();
 
+  // MQTT: версия прошивки = дата сборки, её видно в карточке устройства HA
+  mqtt.begin(&config, deviceMac, deviceName, __DATE__, onMqttCommand);
+
   // mDNS: устройство доступно как http://<имя>.local
   if (MDNS.begin(deviceName)) {
     MDNS.addService("http", "tcp", 80);
@@ -363,6 +419,12 @@ void loop() {
   telnet.handle();
   failsafe.handle();
   MDNS.update();
+
+  {
+    MqttClient::Payload mp;
+    fillMqttPayload(mp);
+    mqtt.handle(mp);
+  }
   ws.cleanupClients();
 
   uint32_t now = millis();
@@ -434,6 +496,13 @@ void loop() {
   if (hotPulse || coldPulse) {
     metersDirty = true;
     lastMeterPulse = now;
+    // Показания в HA обновляем сразу, не дожидаясь периодической
+    // публикации: расход воды — событие, а не фон
+    if (mqtt.isConnected()) {
+      MqttClient::Payload mp;
+      fillMqttPayload(mp);
+      mqtt.publishState(mp);
+    }
   }
 
   // Показания уезжают в EEPROM через 30 с после последнего импульса.
@@ -666,6 +735,12 @@ void sendFullState(AsyncWebSocketClient *client) {
   cfg["debounceClosedMs"] = config.data.debounceClosedMs;
   cfg["debounceOpenMs"] = config.data.debounceOpenMs;
   cfg["deviceName"] = config.data.deviceName;      // пустое = имя по MAC
+  cfg["mqttEnabled"] = config.data.mqttEnabled;
+  cfg["mqttHost"] = config.data.mqttHost;
+  cfg["mqttPort"] = config.data.mqttPort;
+  cfg["mqttUser"] = config.data.mqttUser;
+  cfg["mqttIntervalSec"] = config.data.mqttIntervalSec;
+  // mqttPass не отдаём — как и остальные пароли
   cfg["defaultDeviceName"] = defaultDeviceName;
   // Пароли (wifiPass/smtpPass) намеренно не отдаём клиенту
 
@@ -751,6 +826,14 @@ void handleWsMessage(AsyncWebSocketClient *client, const String &msg) {
     char cleanName[sizeof(config.data.deviceName)];
     sanitizeDeviceName(nm, strlen(nm), cleanName, sizeof(cleanName));
     strlcpy(config.data.deviceName, cleanName, sizeof(config.data.deviceName));
+
+    // MQTT
+    config.data.mqttEnabled = cfg["mqttEnabled"] | false;
+    strlcpy(config.data.mqttHost, cfg["mqttHost"] | "", sizeof(config.data.mqttHost));
+    config.data.mqttPort = cfg["mqttPort"] | 1883;
+    strlcpy(config.data.mqttUser, cfg["mqttUser"] | "", sizeof(config.data.mqttUser));
+    keepOrSet(config.data.mqttPass, cfg["mqttPass"], sizeof(config.data.mqttPass));
+    config.data.mqttIntervalSec = cfg["mqttIntervalSec"] | 0;
 
     config.save();
     needsRestart = true;

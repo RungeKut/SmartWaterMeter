@@ -60,6 +60,16 @@ struct ConfigData {
   // читаются как есть. В байтах за прежним размером лежит 0xFF —
   // санитайзер при загрузке превратит это в пустую строку.
   char deviceName[32];
+
+  // MQTT (Home Assistant autodiscovery).
+  // Снова добавлено В КОНЕЦ структуры — смещения прежних полей не
+  // меняются, существующие настройки читаются как есть.
+  bool mqttEnabled;
+  char mqttHost[48];
+  uint16_t mqttPort;
+  char mqttUser[32];
+  char mqttPass[32];
+  uint16_t mqttIntervalSec;   // период публикации состояния, 0 = по умолчанию
 };
 
 class ConfigStore {
@@ -71,6 +81,46 @@ public:
     load();
   }
   
+  // Есть ли нулевой терминатор внутри поля.
+  static bool isTerminated(const char *s, size_t size) {
+    for (size_t i = 0; i < size; i++) if (s[i] == 0) return true;
+    return false;
+  }
+
+  // ОБЯЗАТЕЛЬНО для любого поля, добавленного в конец структуры.
+  //
+  // При первой загрузке после расширения ConfigData новые поля читаются
+  // из неинициализированной flash, где лежит 0xFF. Для bool это true,
+  // для uint16_t — 65535, для строки — мусор без терминатора. Магическое
+  // число при этом валидно (оно в начале структуры), поэтому сброса на
+  // defaults не происходит и мусор уходит в работу как настройка.
+  //
+  // Ровно так и случилось: MQTT оказался «включён» с мусорным хостом и
+  // портом 65535, и устройство принялось долбиться в несуществующий
+  // брокер каждые 30 секунд.
+  void sanitizeNewFields() {
+    bool virgin = (data.mqttPort == 0xFFFF)
+               || !isTerminated(data.mqttHost, sizeof(data.mqttHost))
+               || !isTerminated(data.mqttUser, sizeof(data.mqttUser))
+               || !isTerminated(data.mqttPass, sizeof(data.mqttPass));
+
+    if (virgin) {
+      Log.println(F("[EEPROM] Блок MQTT не инициализирован -> значения по умолчанию"));
+      data.mqttEnabled = false;
+      data.mqttHost[0] = '\0';
+      data.mqttUser[0] = '\0';
+      data.mqttPass[0] = '\0';
+      data.mqttPort = 1883;
+      data.mqttIntervalSec = 0;
+      return;
+    }
+
+    // Поля валидны, но отдельные значения могли прийти из 0xFF
+    if (data.mqttPort == 0) data.mqttPort = 1883;
+    if (data.mqttIntervalSec == 0xFFFF) data.mqttIntervalSec = 0;
+    data.mqttEnabled = (data.mqttEnabled != 0);
+  }
+
   void load() {
     EEPROM.get(0, data);
     if (data.magic != EEPROM_MAGIC) {
@@ -83,6 +133,7 @@ public:
       Log.printf("[EEPROM] SSID='%s', пароль задан: %s\n",
         data.wifiSSID, strlen(data.wifiPass) > 0 ? "да" : "нет");
     }
+    sanitizeNewFields();
   }
   
   // Запись в EEPROM. Ядро ESP8266 само сравнивает буфер с текущим
@@ -125,6 +176,14 @@ public:
 
     // Имя устройства — пустое, будет сгенерировано из MAC
     data.deviceName[0] = '\0';
+
+    // MQTT выключен по умолчанию
+    data.mqttEnabled = false;
+    data.mqttHost[0] = '\0';
+    data.mqttPort = 1883;
+    data.mqttUser[0] = '\0';
+    data.mqttPass[0] = '\0';
+    data.mqttIntervalSec = 0;
 
     // Расписание отчёта по умолчанию: ежедневно в 09:00
     data.reportHour = 9;
