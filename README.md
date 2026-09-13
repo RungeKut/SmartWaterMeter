@@ -321,10 +321,26 @@ SmartWaterMeter/
     TelnetSerial.h            # Логи по WiFi (TCP:23) + консоль команд
     MqttClient.h              # MQTT + автодискавери Home Assistant
     FailsafeOTA.h             # Подтверждение прошивки после OTA
+  test/                       # нативные тесты C++ (pio test -e native)
+    stubs/                    # заглушки Arduino/EEPROM/secrets
+    test_meter/               # автомат подсчёта импульсов
+  tests/                      # тесты SPA на Node (node tests/run.js)
+    frontend/
   .gitignore
   LICENSE
   README.md
 ```
+
+## Тесты
+
+Два набора, оба гоняются на компьютере без платы:
+
+```bash
+pio test -e native     # логика прошивки (C++, Unity)
+node tests/run.js      # логика SPA (JavaScript, без зависимостей)
+```
+
+Покрыты места, где дефекты были тихими: пересчёт литров в м³, автомат подсчёта импульсов геркона, расписание отчётов. Подробности и требования — в [docs/testing.md](docs/testing.md).
 
 ## Сборка
 

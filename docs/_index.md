@@ -48,6 +48,7 @@
 | Калибровка DS18B20 | `docs/calibration.md` |
 | Фронтенд (SPA, вкладки) | `docs/frontend.md` |
 | Сборка, прошивка | `docs/build-flash.md` |
+| Тесты на хосте | `docs/testing.md` |
 | Особенности и подводные камни | `docs/pitfalls.md` |
 
 ---
