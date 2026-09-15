@@ -35,7 +35,7 @@
 | updateLocalTime | каждый цикл | NTP время |
 | LED mode | каждый цикл | Выбор режима по состоянию |
 | DS18B20 фаза 1 | 1000ms | startConversion (~2 мс, неблокирующий) |
-| DS18B20 фаза 2 | через ≥850ms | readTemperatures + broadcast |
+| DS18B20 фаза 2 | через ≥850ms | readTemperatures + рассылка `sensors` через `wsBroadcastTelemetry()` |
 | rescanBusLight | каждые 30с | Обновление списка шины |
 | MeterCounter::process | каждый цикл | Разбор событий геркона |
 | EEPROM счётчиков | через 30 с после импульса | `config.save()` |
@@ -52,6 +52,12 @@
 | `fillSensorState(doc)` | temperatures, meters, calibrating, calibrate_index, sensorMapping, busDevices |
 
 Раньше эти блоки были продублированы в двух местах, причём `sensors` содержал только температуры, счётчики и шину. Из-за этого uptime, heap, время и IP на Dashboard замирали до переподключения WebSocket.
+
+### Рассылка телеметрии
+
+Секундный кадр `sensors` уходит не напрямую, а через `wsBroadcastTelemetry()`: он пропускает кадр, если очередь клиента заполнена. Очередь `AsyncWebSocketClient` на ESP8266 — 8 сообщений, и библиотека по умолчанию **закрывает соединение** при переполнении; браузер переподключается и получает `fullState`, что на вкладке Settings выглядело как самопроизвольный сброс формы. Пропущенный кадр телеметрии дешевле обрыва — следующий придёт через секунду.
+
+Ответы на команды (`saveConfigResult`, результаты калибровки) идут через `wsSendJson`/`wsBroadcastJson` и не теряются. Подробности — в [pitfalls.md, раздел 27](../pitfalls.md).
 
 Ещё один помощник — `keepOrSet(dst, src, size)`: записывает значение только если оно непустое. Применяется к паролям (см. раздел «Пароли» ниже).
 

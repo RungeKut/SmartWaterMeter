@@ -105,6 +105,7 @@ void onCalibrateDone(int sensorIndex, bool success);
 void telnetConfirmFirmware();
 void wsSendJson(AsyncWebSocketClient *client, const JsonDocument &doc);
 void wsBroadcastJson(const JsonDocument &doc);
+void wsBroadcastTelemetry(const JsonDocument &doc);
 void handleWsMessage(AsyncWebSocketClient *client, const String &msg);
 void sendFullState(AsyncWebSocketClient *client);
 void setupHttpRoutes();
@@ -370,6 +371,11 @@ void setup() {
                  AwsEventType type, void *arg, uint8_t *data, size_t len) {
     if (type == WS_EVT_CONNECT) {
       Log.printf("[WS] Client #%u connected\n", client->id());
+      // Вторая линия защиты от обрыва: если очередь всё-таки переполнилась
+      // (например, плата ушла в долгую отправку почты), лучше потерять
+      // кадр телеметрии, чем соединение — обрыв перезагружал страницу
+      // настроек поверх незаконченного ввода.
+      client->setCloseClientOnQueueFull(false);
       sendFullState(client);
     } else if (type == WS_EVT_DISCONNECT) {
       Log.printf("[WS] Client #%u disconnected\n", client->id());
@@ -481,7 +487,7 @@ void loop() {
     doc["type"] = "sensors";
     fillSystemState(doc);
     fillSensorState(doc);
-    wsBroadcastJson(doc);
+    wsBroadcastTelemetry(doc);
 
     // Periodic bus rescan (every 30s) to detect newly connected/disconnected sensors
     if (now - lastBusRescan > 30000 && !tempSensors.isCalibrating()) {
@@ -709,6 +715,21 @@ void wsBroadcastJson(const JsonDocument &doc) {
   String json;
   serializeJson(doc, json);
   ws.textAll(json);
+}
+
+// Телеметрия раз в секунду. Очередь клиента на ESP8266 — 8 сообщений;
+// при переполнении библиотека по умолчанию РАЗРЫВАЕТ соединение, браузер
+// через 3 секунды переподключается и получает fullState. Для страницы
+// настроек это выглядело как самопроизвольный сброс формы.
+//
+// Пропущенный кадр телеметрии не стоит обрыва: следующий придёт через
+// секунду. Поэтому при забитой очереди просто молчим. Важные ответы
+// (saveConfigResult, результат калибровки) по-прежнему идут через
+// wsBroadcastJson/wsSendJson без потерь.
+void wsBroadcastTelemetry(const JsonDocument &doc) {
+  if (ws.count() == 0) return;
+  if (!ws.availableForWriteAll()) return;
+  wsBroadcastJson(doc);
 }
 
 void sendFullState(AsyncWebSocketClient *client) {

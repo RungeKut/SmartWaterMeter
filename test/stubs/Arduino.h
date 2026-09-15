@@ -28,15 +28,24 @@
 #define F(x) (x)
 
 // ---- управляемое тестом время ----
-extern uint32_t fakeMicros;
+//
+// База — 64-битный монотонный счётчик микросекунд, а micros() и millis()
+// урезаются до 32 бит КАЖДЫЙ САМОСТОЯТЕЛЬНО, ровно как на железе:
+// micros() переполняется через 71.6 минуты, millis() — через 49.7 суток.
+//
+// Раньше базой был 32-битный fakeMicros, а millis() считался как
+// fakeMicros / 1000 — то есть переполнялся вместе с micros(), каждые
+// 71.6 минуты. Проверить поведение на долгих интервалах было нельзя:
+// возраст состояния скакал там, где на железе он растёт ровно.
+extern uint64_t fakeTimeUs;
 extern uint8_t  fakePinLevel[24];
 
-inline uint32_t micros() { return fakeMicros; }
-inline uint32_t millis() { return fakeMicros / 1000UL; }
+inline uint32_t micros() { return (uint32_t)fakeTimeUs; }
+inline uint32_t millis() { return (uint32_t)(fakeTimeUs / 1000ULL); }
 
 // Сдвинуть время вперёд (используется тестами)
-inline void advanceMicros(uint32_t us) { fakeMicros += us; }
-inline void advanceMillis(uint32_t ms) { fakeMicros += ms * 1000UL; }
+inline void advanceMicros(uint32_t us) { fakeTimeUs += us; }
+inline void advanceMillis(uint32_t ms) { fakeTimeUs += (uint64_t)ms * 1000ULL; }
 
 // ---- пины ----
 inline void pinMode(uint8_t, uint8_t) {}

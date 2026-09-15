@@ -15,7 +15,7 @@
 // Определения для заглушек. Объявляются ДО модулей проекта: те
 // рассчитывают, что secrets.h уже подключён (в прошивке это делает
 // Wemos_Mini.ino).
-uint32_t fakeMicros = 0;
+uint64_t fakeTimeUs = 0;
 uint8_t fakePinLevel[24];
 SerialStub Serial;
 
@@ -37,7 +37,7 @@ static const uint8_t PIN = 14;
 // --- вспомогательное ---
 
 static void resetAll(float litersPerPulse = 1.0f) {
-  fakeMicros = 1000000;              // не с нуля, чтобы ловить ошибки с 0
+  fakeTimeUs = 1000000;              // не с нуля, чтобы ловить ошибки с 0
   for (int i = 0; i < 24; i++) fakePinLevel[i] = HIGH;
   cfg.resetDefaults();
   cfg.data.litersPerPulseHot = litersPerPulse;
@@ -60,6 +60,12 @@ static void runFor(uint32_t ms, uint32_t stepMs = 10) {
     advanceMillis(stepMs);
     meter->process();
   }
+}
+
+// Прокрутить время БЕЗ вызова process(): loop() занят почтой, MQTT или
+// шиной 1-Wire. Прерывания при этом продолжают наполнять очередь.
+static void blockedFor(uint32_t ms) {
+  advanceMillis(ms);
 }
 
 // Один «нормальный» импульс: замыкание на closedMs, затем пауза openMs
@@ -194,6 +200,212 @@ void test_diagnostics_closed_duration(void) {
   TEST_ASSERT_TRUE(meter->lastClosedMs() <= 140);
 }
 
+// Импульс, целиком уложившийся в паузу между двумя process().
+// Оба фронта попадают в очередь сразу, и до исправления второй фронт
+// снимал кандидата как дребезг — импульс пропадал молча.
+void test_pulse_entirely_inside_blocked_loop(void) {
+  resetAll();
+  runFor(200);
+
+  setPin(LOW);  blockedFor(120);   // замкнулся и разомкнулся,
+  setPin(HIGH); blockedFor(780);   // пока loop() был занят
+  runFor(500);
+
+  TEST_ASSERT_EQUAL_UINT32(1, meter->totalPulses());
+  TEST_ASSERT_EQUAL_UINT32(0, meter->bounces());
+  TEST_ASSERT_FALSE(meter->isClosed());
+}
+
+// Несколько импульсов подряд внутри одной паузы должны засчитаться все
+void test_several_pulses_inside_blocked_loop(void) {
+  resetAll();
+  runFor(200);
+
+  for (int i = 0; i < 4; i++) {
+    setPin(LOW);  blockedFor(100);
+    setPin(HIGH); blockedFor(200);
+  }
+  runFor(500);
+
+  TEST_ASSERT_EQUAL_UINT32(4, meter->totalPulses());
+}
+
+// Длительность замкнутой фазы берётся из меток фронтов, а не из момента
+// разбора: иначе диагностика показывала бы длину всей паузы loop().
+void test_blocked_loop_keeps_closed_duration(void) {
+  resetAll();
+  runFor(200);
+
+  setPin(LOW);  blockedFor(120);
+  setPin(HIGH); blockedFor(780);
+  runFor(500);
+
+  TEST_ASSERT_EQUAL_UINT32(1, meter->totalPulses());
+  TEST_ASSERT_TRUE(meter->lastClosedMs() >= 110);
+  TEST_ASSERT_TRUE(meter->lastClosedMs() <= 130);
+}
+
+// Антидребезг не должен ослабнуть: короткое замыкание внутри паузы
+// loop() по-прежнему не импульс.
+void test_bounce_inside_blocked_loop_still_ignored(void) {
+  resetAll();
+  runFor(200);
+
+  for (int i = 0; i < 6; i++) {
+    setPin(LOW);  advanceMicros(300);
+    setPin(HIGH); advanceMicros(300);
+  }
+  runFor(500);
+
+  TEST_ASSERT_EQUAL_UINT32(0, meter->totalPulses());
+}
+
+// Пауза короче debounceOpenMs внутри заблокированного loop() не должна
+// разделять одно замыкание на два импульса.
+void test_short_gap_inside_blocked_loop_not_counted_twice(void) {
+  resetAll();
+  runFor(200);
+
+  setPin(LOW);  blockedFor(100);
+  setPin(HIGH); blockedFor(20);    // пауза короче порога 50 мс
+  setPin(LOW);  blockedFor(100);
+  setPin(HIGH); blockedFor(300);
+  runFor(500);
+
+  TEST_ASSERT_EQUAL_UINT32(1, meter->totalPulses());
+}
+
+// ==================================================================
+// Границы: от чего разбор зависит, а от чего не должен
+// ==================================================================
+
+// Сверху длительность замыкания не ограничена ничем. Импульс
+// засчитывается в момент размыкания, сколько бы ни длилось замыкание —
+// заодно проходим переполнение micros() на 71.6 минуте.
+void test_very_long_closed_phase_counts_once(void) {
+  resetAll();
+  runFor(200);
+
+  setPin(LOW);
+  runFor(2UL * 60 * 60 * 1000, 1000);   // два часа замкнуто
+  TEST_ASSERT_EQUAL_UINT32(0, meter->totalPulses());
+  TEST_ASSERT_TRUE(meter->isClosed());
+  TEST_ASSERT_TRUE(meter->stateAgeSec() >= 7100);
+
+  setPin(HIGH);
+  runFor(500);
+  TEST_ASSERT_EQUAL_UINT32(1, meter->totalPulses());
+}
+
+// Импульс, попавший на переполнение micros(): все сравнения идут на
+// разностях uint32, поэтому ни счёт, ни длительность не должны поехать.
+void test_pulse_across_micros_rollover(void) {
+  resetAll();
+  // Пересоздаём счётчик у самой границы переполнения micros()
+  fakeTimeUs = 0xFFFFFF00ULL - 1000000ULL;
+  delete meter;
+  meter = new MeterCounter();
+  meter->begin(PIN, true, &cfg);
+
+  runFor(900, 100);            // подходим к границе вплотную
+  setPin(LOW);  runFor(120);   // замыкание проходит через ноль
+  setPin(HIGH); runFor(300);
+
+  TEST_ASSERT_EQUAL_UINT32(1, meter->totalPulses());
+  TEST_ASSERT_TRUE(meter->lastClosedMs() >= 110);
+  TEST_ASSERT_TRUE(meter->lastClosedMs() <= 130);
+}
+
+// Снизу граница ровно одна — пороги антидребезга. Замыкание длиной
+// точно в порог считается, на микросекунду короче — нет.
+void test_threshold_is_the_only_lower_bound(void) {
+  resetAll();
+  cfg.data.debounceClosedMs = 5;
+  cfg.data.debounceOpenMs = 50;
+
+  runFor(200);
+  setPin(LOW);  advanceMicros(5000);    // ровно порог
+  setPin(HIGH); runFor(300);
+  TEST_ASSERT_EQUAL_UINT32(1, meter->totalPulses());
+
+  setPin(LOW);  advanceMicros(4999);    // на микросекунду меньше
+  setPin(HIGH); runFor(300);
+  TEST_ASSERT_EQUAL_UINT32(1, meter->totalPulses());
+}
+
+// Порог задаётся пользователем: с нулевым антидребезгом берутся
+// значения по умолчанию, а с уменьшенным проходят более короткие
+// импульсы. Никакой зашитой в код границы кроме порога нет.
+void test_lower_bound_follows_configured_threshold(void) {
+  resetAll();
+  cfg.data.debounceClosedMs = 1;        // порог 1 мс вместо 5
+  cfg.data.debounceOpenMs = 10;
+
+  runFor(200);
+  for (int i = 0; i < 3; i++) {
+    setPin(LOW);  advanceMicros(1500);  // 1.5 мс — ниже прежнего порога
+    setPin(HIGH); runFor(100);
+  }
+  TEST_ASSERT_EQUAL_UINT32(3, meter->totalPulses());
+}
+
+// Предел на самом деле не в длительности, а в ЧИСЛЕ фронтов: очередь
+// вмещает METER_EVENT_QUEUE-1 событий. Пока loop() занят, всё сверх
+// этого теряется — и теряется заметно, через счётчик queueOverflow().
+void test_queue_overflow_is_reported(void) {
+  resetAll();
+  runFor(200);
+
+  const int pulses = 30;                // 60 фронтов при очереди в 32
+  for (int i = 0; i < pulses; i++) {
+    setPin(LOW);  blockedFor(100);
+    setPin(HIGH); blockedFor(200);
+  }
+  runFor(500);
+
+  // Часть импульсов неизбежно потеряна — но молчком это не проходит
+  TEST_ASSERT_TRUE(meter->totalPulses() < (uint32_t)pulses);
+  TEST_ASSERT_TRUE(meter->totalPulses() >= 15);
+  TEST_ASSERT_TRUE(meter->queueOverflow() > 0);
+}
+
+// Пока фронтов меньше ёмкости очереди, длительность паузы loop() не
+// влияет ни на что: 15 импульсов за одну паузу считаются все.
+void test_queue_holds_a_full_burst(void) {
+  resetAll();
+  runFor(200);
+
+  for (int i = 0; i < 15; i++) {        // 30 фронтов, очередь 32
+    setPin(LOW);  blockedFor(60);
+    setPin(HIGH); blockedFor(60);
+  }
+  runFor(500);
+
+  TEST_ASSERT_EQUAL_UINT32(15, meter->totalPulses());
+  TEST_ASSERT_EQUAL_UINT32(0, meter->queueOverflow());
+}
+
+// Возраст состояния насыщается на ~49 сутках. Импульс после такого
+// простоя обязан засчитаться, а диагностика min/max — не поехать:
+// иначе столбец «Closed ms» навсегда застревал на 4.29e9 и переставал
+// годиться для подбора порогов.
+void test_saturated_age_does_not_poison_diagnostics(void) {
+  resetAll();
+  runFor(200);
+  pulse(120, 300);                      // нормальный импульс для min/max
+  TEST_ASSERT_EQUAL_UINT32(1, meter->totalPulses());
+
+  setPin(LOW);
+  // По суткам за раз: 50 суток в миллисекундах в uint32_t не влезают
+  for (int d = 0; d < 50; d++) runFor(24UL * 60 * 60 * 1000, 60000);
+  setPin(HIGH);
+  runFor(500);
+
+  TEST_ASSERT_EQUAL_UINT32(2, meter->totalPulses());
+  TEST_ASSERT_TRUE(meter->maxClosedMs() < 1000);   // не 4.29e9
+  TEST_ASSERT_TRUE(meter->minClosedMs() > 0);
+}
+
 // Unity требует эти символы, даже если они пустые
 void setUp(void) {}
 void tearDown(void) {}
@@ -212,5 +424,17 @@ int main(int, char **) {
   RUN_TEST(test_liters_per_pulse_ten);
   RUN_TEST(test_short_gap_not_counted_twice);
   RUN_TEST(test_diagnostics_closed_duration);
+  RUN_TEST(test_pulse_entirely_inside_blocked_loop);
+  RUN_TEST(test_several_pulses_inside_blocked_loop);
+  RUN_TEST(test_blocked_loop_keeps_closed_duration);
+  RUN_TEST(test_bounce_inside_blocked_loop_still_ignored);
+  RUN_TEST(test_short_gap_inside_blocked_loop_not_counted_twice);
+  RUN_TEST(test_very_long_closed_phase_counts_once);
+  RUN_TEST(test_pulse_across_micros_rollover);
+  RUN_TEST(test_threshold_is_the_only_lower_bound);
+  RUN_TEST(test_lower_bound_follows_configured_threshold);
+  RUN_TEST(test_queue_overflow_is_reported);
+  RUN_TEST(test_queue_holds_a_full_burst);
+  RUN_TEST(test_saturated_age_does_not_poison_diagnostics);
   return UNITY_END();
 }

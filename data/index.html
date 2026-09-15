@@ -373,10 +373,14 @@ label { font-size: 12px; color: var(--text-secondary); display: block; margin-bo
 
   <div class="section-title">Meter Settings</div>
   <div class="card">
-    <label>Hot m&sup3;</label><input id="cfgMeterHot" type="number" step="0.001" placeholder="0.000">
-    <label>Cold m&sup3;</label><input id="cfgMeterCold" type="number" step="0.001" placeholder="0.000">
-    <label>L per pulse (Hot)</label><input id="cfgLPH" type="number" step="0.1" placeholder="1.0">
-    <label>L per pulse (Cold)</label><input id="cfgLPC" type="number" step="0.1" placeholder="1.0">
+    <label>Hot m&sup3;</label><input id="cfgMeterHot" type="text" inputmode="decimal" placeholder="0.000">
+    <label>Cold m&sup3;</label><input id="cfgMeterCold" type="text" inputmode="decimal" placeholder="0.000">
+    <label>L per pulse (Hot)</label><input id="cfgLPH" type="text" inputmode="decimal" placeholder="1.0">
+    <label>L per pulse (Cold)</label><input id="cfgLPC" type="text" inputmode="decimal" placeholder="1.0">
+    <div style="font-size:12px;color:var(--text-secondary);margin-top:6px">
+      Decimal point or comma — both work: <em>123.456</em> and <em>123,456</em> are the same
+      reading. A field that is not a number is refused on save, never silently stored as 0.
+    </div>
   </div>
 
   <div class="section-title">Reed Debounce</div>
@@ -396,6 +400,14 @@ label { font-size: 12px; color: var(--text-secondary); display: block; margin-bo
     <div style="font-size:12px;color:var(--text-secondary);margin-top:10px">
       Updates every 30 s. A reed closed for weeks means either no water use or a stuck switch.
     </div>
+  </div>
+
+  <div id="settingsErrors" class="hint warn" style="display:none"></div>
+
+  <div id="settingsDirty" class="hint info" style="display:none">
+    Unsaved edits — the device will not overwrite these fields until you save.
+    <button class="btn btn-outline" type="button" onclick="discardSettingsEdits()"
+            style="margin-top:8px">Discard, reload from device</button>
   </div>
 
   <div style="display:flex;gap:8px;margin-top:12px">
@@ -501,6 +513,9 @@ function handleMessage(msg) {
       }
       break;
     case 'saveConfigResult':
+      // Устройство приняло настройки — с этого момента ему снова можно
+      // заполнять форму (после перезагрузки придёт свежий fullState)
+      if (msg.success) { setSettingsDirty(false); showSettingsErrors([]); }
       showToast(msg.message || 'Config saved');
       break;
     case 'testEmailResult':
@@ -614,15 +629,57 @@ function formatUptime(sec) {
 }
 
 // ======== Settings ========
+
+// Раз в 30 секунд страница просит fullState (keep-alive внизу файла), и
+// раньше updateSettings() безусловно перезаписывала ВСЕ поля значениями
+// с устройства. Ввести что-то длиннее тридцати секунд было невозможно:
+// на очередном keep-alive форма откатывалась к сохранённому. То же самое
+// происходило при каждом переподключении WebSocket.
+//
+// Поэтому: как только пользователь тронул форму, устройство перестаёт
+// править поля — до сохранения или явного отказа от правок. Телеметрия
+// (статус MQTT, диагностика герконов) обновляется по-прежнему: она
+// ничего не вводит.
+let settingsDirty = false;
+
+// Форма хоть раз заполнена данными устройства. До этого поля пусты, и
+// защита от перезаписи была бы опасна: сохранение пустой формы стёрло
+// бы SSID, адрес брокера и показания. Поэтому первое заполнение
+// выполняется всегда, даже если пользователь успел что-то набрать в
+// первую секунду после загрузки.
+let settingsLoaded = false;
+
+function setSettingsDirty(on) {
+  settingsDirty = on;
+  const b = document.getElementById('settingsDirty');
+  if (b) b.style.display = on ? '' : 'none';
+}
+
+function markSettingsDirty() {
+  if (!settingsDirty) setSettingsDirty(true);
+}
+
+function discardSettingsEdits() {
+  setSettingsDirty(false);
+  showSettingsErrors([]);
+  updateSettings();
+  showToast('Reloaded from device');
+}
+
 function updateSettings() {
   if (!state || !state.config) return;
+  // Эти две части не содержат ввода — обновляем всегда
+  updateMqttStatus();
+  updateMeterDiag();
+  if (settingsDirty && settingsLoaded) return;
+  settingsLoaded = true;
+
   const cfg = state.config;
   document.getElementById('cfgMqttEnabled').checked = !!cfg.mqttEnabled;
   document.getElementById('cfgMqttHost').value = cfg.mqttHost || '';
   document.getElementById('cfgMqttPort').value = cfg.mqttPort || 1883;
   document.getElementById('cfgMqttUser').value = cfg.mqttUser || '';
   document.getElementById('cfgMqttInterval').value = cfg.mqttIntervalSec || 0;
-  updateMqttStatus();
 
   const dn = document.getElementById('cfgDeviceName');
   dn.value = cfg.deviceName || '';
@@ -648,7 +705,6 @@ function updateSettings() {
   document.getElementById('cfgLPC').value = cfg.litersPerPulseCold !== undefined ? cfg.litersPerPulseCold : 1.0;
   document.getElementById('cfgDbClosed').value = cfg.debounceClosedMs !== undefined ? cfg.debounceClosedMs : 0;
   document.getElementById('cfgDbOpen').value = cfg.debounceOpenMs !== undefined ? cfg.debounceOpenMs : 0;
-  updateMeterDiag();
 }
 
 function updateMqttStatus() {
@@ -753,8 +809,27 @@ function setSchedMode(mode, dayValue) {
 }
 
 document.querySelectorAll('#schedSeg button').forEach(b => {
-  b.addEventListener('click', () => setSchedMode(parseInt(b.dataset.sched)));
+  b.addEventListener('click', () => {
+    markSettingsDirty();
+    setSchedMode(parseInt(b.dataset.sched));
+  });
 });
+
+// Любая правка на вкладке настроек включает защиту от перезаписи.
+// Слушаем всплывающие события на контейнере, а не на каждом поле:
+// программное присваивание .value их не порождает, поэтому заполнение
+// формы из fullState само себя пометкой не включит.
+(function watchSettingsInput() {
+  const tab = document.getElementById('tab-settings');
+  if (!tab) return;
+  ['input', 'change'].forEach(ev => {
+    tab.addEventListener(ev, (e) => {
+      const tag = e.target && e.target.tagName;
+      if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') markSettingsDirty();
+    });
+  });
+})();
+
 document.getElementById('cfgReportTime').addEventListener('change', updateSchedPreview);
 document.getElementById('cfgReportDay').addEventListener('change', updateSchedPreview);
 
@@ -833,38 +908,103 @@ function updateSchedPreview() {
   }
 }
 
-function getConfig() {
+// ======== Разбор чисел из полей ========
+//
+// Показания счётчика набирают и с точкой, и с запятой: на русской
+// раскладке запятая стоит на цифровом блоке. У <input type="number">
+// невалидный текст читается как ПУСТАЯ строка, а parseFloat('') || 0
+// давало ноль — то есть «123,456» молча затирало показания счётчика
+// нулём в EEPROM. Поэтому десятичные поля сделаны текстовыми, а
+// разделитель нормализуется здесь.
+//
+// Возвращает null, если разобрать нельзя: решение принимает вызывающий.
+function parseDecimal(raw) {
+  if (raw === undefined || raw === null) return null;
+  // Пробелы (в том числе неразрывные — они прилетают при вставке
+  // из таблицы) убираем, все запятые превращаем в точки
+  const s = String(raw).replace(/[\s\u00a0\u202f]/g, '').replace(/,/g, '.');
+  if (s === '') return null;
+  if (!/^[+-]?(\d+(\.\d*)?|\.\d+)$/.test(s)) return null;
+  const v = parseFloat(s);
+  return isFinite(v) ? v : null;
+}
+
+function showSettingsErrors(list) {
+  const el = document.getElementById('settingsErrors');
+  if (!el) return;
+  if (!list.length) { el.style.display = 'none'; el.innerHTML = ''; return; }
+  el.innerHTML = 'Not saved:<br>' + list.join('<br>');
+  el.style.display = '';
+}
+
+// Собрать настройки из формы. Непонятное число — ошибка в errors, а не
+// тихая подстановка нуля: потерять показания счётчика хуже, чем не
+// сохранить настройки вовсе. Пустое поле — это «значение по умолчанию».
+function collectConfig(errors) {
+  function num(id, label, def, opts) {
+    opts = opts || {};
+    const raw = document.getElementById(id).value;
+    if (String(raw).trim() === '') return def;
+    let v = parseDecimal(raw);
+    if (v === null) {
+      errors.push(label + ': "' + raw + '" is not a number');
+      return def;
+    }
+    if (opts.int) v = Math.round(v);
+    if (opts.min !== undefined && v < opts.min) {
+      errors.push(label + ': must be at least ' + opts.min);
+      return def;
+    }
+    if (opts.max !== undefined && v > opts.max) {
+      errors.push(label + ': must be at most ' + opts.max);
+      return def;
+    }
+    return v;
+  }
+
+  const t = getReportTime();
   return {
     deviceName: document.getElementById('cfgDeviceName').value,
     mqttEnabled: document.getElementById('cfgMqttEnabled').checked,
     mqttHost: document.getElementById('cfgMqttHost').value,
-    mqttPort: parseInt(document.getElementById('cfgMqttPort').value) || 1883,
+    mqttPort: num('cfgMqttPort', 'MQTT port', 1883, {int: true, min: 1, max: 65535}),
     mqttUser: document.getElementById('cfgMqttUser').value,
     mqttPass: document.getElementById('cfgMqttPass').value,
-    mqttIntervalSec: parseInt(document.getElementById('cfgMqttInterval').value) || 0,
+    mqttIntervalSec: num('cfgMqttInterval', 'MQTT interval', 0, {int: true, min: 0, max: 3600}),
     wifiSSID: document.getElementById('cfgSSID').value,
     wifiPass: document.getElementById('cfgPass').value,
     smtpHost: document.getElementById('cfgSmtpHost').value,
-    smtpPort: parseInt(document.getElementById('cfgSmtpPort').value) || 465,
+    smtpPort: num('cfgSmtpPort', 'SMTP port', 465, {int: true, min: 1, max: 65535}),
     smtpEmail: document.getElementById('cfgSmtpEmail').value,
     smtpPass: document.getElementById('cfgSmtpPass').value,
     smtpRecipient: document.getElementById('cfgSmtpRecipient').value,
-    reportHour: getReportTime().h,
-    reportMinute: getReportTime().m,
+    reportHour: t.h,
+    reportMinute: t.m,
     reportSchedule: schedMode,
     reportDay: schedMode === 0 ? 0 : (parseInt(document.getElementById('cfgReportDay').value) || 0),
-    meterHotM3: parseFloat(document.getElementById('cfgMeterHot').value) || 0,
-    meterColdM3: parseFloat(document.getElementById('cfgMeterCold').value) || 0,
-    litersPerPulseHot: parseFloat(document.getElementById('cfgLPH').value) || 1.0,
-    litersPerPulseCold: parseFloat(document.getElementById('cfgLPC').value) || 1.0,
-    debounceClosedMs: parseInt(document.getElementById('cfgDbClosed').value) || 0,
-    debounceOpenMs: parseInt(document.getElementById('cfgDbOpen').value) || 0,
+    // Показания: пустое поле = 0, мусор = ошибка (см. num выше)
+    meterHotM3: num('cfgMeterHot', 'Hot m3', 0, {min: 0}),
+    meterColdM3: num('cfgMeterCold', 'Cold m3', 0, {min: 0}),
+    // Цена импульса: ноль сделал бы счётчик мёртвым, поэтому нижняя
+    // граница — не 0, а наименьшее осмысленное значение
+    litersPerPulseHot: num('cfgLPH', 'L per pulse (Hot)', 1.0, {min: 0.001, max: 1000}),
+    litersPerPulseCold: num('cfgLPC', 'L per pulse (Cold)', 1.0, {min: 0.001, max: 1000}),
+    debounceClosedMs: num('cfgDbClosed', 'Min closed ms', 0, {int: true, min: 0, max: 5000}),
+    debounceOpenMs: num('cfgDbOpen', 'Min open ms', 0, {int: true, min: 0, max: 60000}),
   };
 }
 
+function getConfig() {
+  return collectConfig([]);
+}
+
 function saveConfig() {
+  const errors = [];
+  const cfg = collectConfig(errors);
+  showSettingsErrors(errors);
+  if (errors.length) { showToast('Fix the highlighted fields'); return; }
   if (!ws || ws.readyState !== WebSocket.OPEN) { showToast('Not connected'); return; }
-  ws.send(JSON.stringify({type: 'saveConfig', config: getConfig()}));
+  ws.send(JSON.stringify({type: 'saveConfig', config: cfg}));
   showToast('Saving config...');
 }
 
