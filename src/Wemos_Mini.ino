@@ -36,6 +36,7 @@
 #include "TelnetSerial.h"
 #include "FailsafeOTA.h"
 #include "MqttClient.h"
+#include "FilterGuard.h"
 
 // SMTP
 #include <ESP_Mail_Client.h>
@@ -61,6 +62,16 @@ MqttClient mqtt;
 uint8_t deviceMac[6];
 
 AsyncWebServer server(80);
+FilterGuard filterGuard;
+
+// Алерты фильтра отправляются НЕ из обработчика события: письмо через
+// ESP_Mail_Client блокирует loop() на секунды, а обработчик вызывается
+// из середины разбора датчиков. Складываем в маленькое кольцо и
+// разбираем в конце цикла.
+#define FILTER_ALERT_QUEUE 4
+struct FilterAlert { FilterGuard::Event ev; float tempC; };
+FilterAlert filterAlerts[FILTER_ALERT_QUEUE];
+uint8_t filterAlertHead = 0, filterAlertTail = 0;
 AsyncWebSocket ws("/ws");
 
 char apSSID[32];
@@ -116,6 +127,8 @@ void sanitizeDeviceName(const char *src, size_t srcSize, char *dst, size_t dstSi
 String jsonTemp(float t);
 void applyDeviceName();
 void onMqttCommand(const String &cmd, const String &value);
+void onFilterEvent(FilterGuard::Event ev, float tempC);
+void handleFilterAlerts();
 void fillMqttPayload(MqttClient::Payload &p);
 
 // ==================== Helpers ====================
@@ -217,6 +230,17 @@ void fillSensorState(JsonDocument &doc) {
   m["hot_m3"]  = config.data.meterHotM3;
   m["cold_m3"] = config.data.meterColdM3;
 
+  JsonObject fg = doc["filter"].to<JsonObject>();
+  fg["enabled"] = config.data.filterEnabled;
+  fg["closed"] = filterGuard.isClosed();
+  fg["sensorLost"] = filterGuard.isSensorLost();
+  fg["trips"] = filterGuard.trips();
+  fg["closedSec"] = filterGuard.closedSec();
+  fg["tempOn"] = serialized(String(filterGuard.onThreshold(), 1));
+  fg["tempOff"] = serialized(String(filterGuard.offThreshold(), 1));
+  if (filterGuard.hasMaxTemp()) fg["maxTemp"] = serialized(String(filterGuard.maxTempC(), 1));
+  else                          fg["maxTemp"] = nullptr;
+
   doc["calibrating"] = tempSensors.isCalibrating();
   doc["calibrate_index"] = tempSensors.getCalibrateIndex();
   doc["calibrate_remaining"] = tempSensors.getCalibrateRemainingSec();
@@ -275,6 +299,15 @@ void onMqttCommand(const String &cmd, const String &value) {
     else                          config.data.debounceOpenMs = (uint16_t)v;
     config.save();
     Log.printf("[MQTT] %s set to %ld ms\n", cmd.c_str(), v);
+  } else if (cmd == "filter_temp_on" || cmd == "filter_temp_off") {
+    float v = value.toFloat();
+    if (cmd == "filter_temp_on") {
+      if (v > 0 && v <= FILTER_TEMP_MAX_C) config.data.filterTempOnC = v;
+    } else {
+      if (v > 0 && v < config.data.filterTempOnC) config.data.filterTempOffC = v;
+    }
+    config.save();
+    Log.printf("[MQTT] %s set to %.1f C\n", cmd.c_str(), v);
   } else {
     Log.printf("[MQTT] Unknown command: %s\n", cmd.c_str());
   }
@@ -303,6 +336,13 @@ void fillMqttPayload(MqttClient::Payload &p) {
 
   p.debounceClosedMs = config.data.debounceClosedMs;
   p.debounceOpenMs = config.data.debounceOpenMs;
+
+  p.filterEnabled = config.data.filterEnabled;
+  p.filterClosed = filterGuard.isClosed();
+  p.filterSensorLost = filterGuard.isSensorLost();
+  p.filterTrips = filterGuard.trips();
+  p.filterTempOnC = filterGuard.onThreshold();
+  p.filterTempOffC = filterGuard.offThreshold();
 }
 
 // ==================== SETUP ====================
@@ -333,6 +373,10 @@ void setup() {
 
   meterHot.begin(PIN_METER_HOT, true, &config);
   meterCold.begin(PIN_METER_COLD, false, &config);
+
+  // Реле защиты фильтра. Инициализируется рано и в безопасном
+  // состоянии: клапан нормально открытый, вода на фильтр идёт.
+  filterGuard.begin(PIN_FILTER_RELAY, &config, onFilterEvent);
 
   timeClient.begin();
 
@@ -480,6 +524,11 @@ void loop() {
     sensorConvPending = false;
     tempSensors.readTemperatures();
 
+    // Защита фильтра работает по свежему значению ХВС. isFound(0)
+    // отличает настоящий холод от отвалившегося датчика: -127 нельзя
+    // принимать за «вода холодная».
+    filterGuard.handle(tempSensors.getTempHVS(), tempSensors.isFound(0));
+
     // Broadcast to all WebSocket clients.
     // Помимо датчиков шлём и системные поля — иначе uptime, heap, время
     // и IP на Dashboard замирали бы до переподключения WebSocket.
@@ -527,7 +576,10 @@ void loop() {
   }
 
   // ---- Email report schedule ----
-  if (wifiConnected && strlen(config.data.smtpEmail) > 0 && ptm != nullptr) {
+  // reportEnabled — общий выключатель плановых писем. SMTP при этом
+  // остаётся настроенным: Test Email и алерты фильтра продолжают работать.
+  if (config.data.reportEnabled && wifiConnected
+      && strlen(config.data.smtpEmail) > 0 && ptm != nullptr) {
     if (ptm->tm_hour == config.data.reportHour
         && ptm->tm_min == config.data.reportMinute
         && now - lastEmailSend > 60000) {
@@ -551,6 +603,9 @@ void loop() {
     // как снимаются базовые температуры.
     tempSensors.startCalibration(calibrateRequestedIndex, onCalibrateDone);
   }
+
+  // ---- Алерты фильтра (письма блокирующие, поэтому здесь) ----
+  handleFilterAlerts();
 
   // ---- Restart ----
   if (needsRestart && now > 10000) {
@@ -761,6 +816,15 @@ void sendFullState(AsyncWebSocketClient *client) {
   cfg["mqttPort"] = config.data.mqttPort;
   cfg["mqttUser"] = config.data.mqttUser;
   cfg["mqttIntervalSec"] = config.data.mqttIntervalSec;
+  cfg["reportEnabled"] = config.data.reportEnabled;
+  cfg["filterEnabled"] = config.data.filterEnabled;
+  cfg["filterTempOnC"] = serialized(String(config.data.filterTempOnC, 1));
+  cfg["filterTempOffC"] = serialized(String(config.data.filterTempOffC, 1));
+  cfg["filterRelayActiveLow"] = config.data.filterRelayActiveLow;
+  cfg["filterNotifyMqtt"] = config.data.filterNotifyMqtt;
+  cfg["filterNotifyEmail"] = config.data.filterNotifyEmail;
+  cfg["filterMetricsEnabled"] = config.data.filterMetricsEnabled;
+  cfg["filterRelayPin"] = PIN_FILTER_RELAY;
   // mqttPass не отдаём — как и остальные пароли
   cfg["defaultDeviceName"] = defaultDeviceName;
   // Пароли (wifiPass/smtpPass) намеренно не отдаём клиенту
@@ -855,6 +919,23 @@ void handleWsMessage(AsyncWebSocketClient *client, const String &msg) {
     strlcpy(config.data.mqttUser, cfg["mqttUser"] | "", sizeof(config.data.mqttUser));
     keepOrSet(config.data.mqttPass, cfg["mqttPass"], sizeof(config.data.mqttPass));
     config.data.mqttIntervalSec = cfg["mqttIntervalSec"] | 0;
+
+    // Защита фильтра
+    config.data.reportEnabled = cfg["reportEnabled"] | true;
+    config.data.filterEnabled = cfg["filterEnabled"] | false;
+    config.data.filterTempOnC = cfg["filterTempOnC"] | FILTER_TEMP_ON_DEFAULT;
+    config.data.filterTempOffC = cfg["filterTempOffC"] | FILTER_TEMP_OFF_DEFAULT;
+    // Схлопнувшийся гистерезис заставил бы реле дребезжать. Клиент это
+    // уже проверяет, но настройки приходят и из других мест.
+    if (!(config.data.filterTempOnC > 0) || config.data.filterTempOnC > FILTER_TEMP_MAX_C)
+      config.data.filterTempOnC = FILTER_TEMP_ON_DEFAULT;
+    if (!(config.data.filterTempOffC > 0)
+        || config.data.filterTempOffC >= config.data.filterTempOnC)
+      config.data.filterTempOffC = config.data.filterTempOnC - FILTER_HYST_MIN_C;
+    config.data.filterRelayActiveLow = cfg["filterRelayActiveLow"] | false;
+    config.data.filterNotifyMqtt = cfg["filterNotifyMqtt"] | false;
+    config.data.filterNotifyEmail = cfg["filterNotifyEmail"] | false;
+    config.data.filterMetricsEnabled = cfg["filterMetricsEnabled"] | false;
 
     config.save();
     needsRestart = true;
@@ -1014,6 +1095,33 @@ void setupHttpRoutes() {
     body += "smartwatermeter_water_m3_total{type=\"cold\"} " + String(config.data.meterColdM3, 3) + "\n";
 
     // Аптайм — gauge: он сбрасывается при перезагрузке
+    // Метрики фильтра отдаются по галочке. Prometheus ничего не
+    // «получает» — он опрашивает сам, поэтому «уведомлять через
+    // Prometheus» здесь означает именно «выставлять серию наружу».
+    if (config.data.filterMetricsEnabled) {
+      body += "# HELP smartwatermeter_filter_valve_closed Osmosis filter inlet valve is shut\n";
+      body += "# TYPE smartwatermeter_filter_valve_closed gauge\n";
+      body += "smartwatermeter_filter_valve_closed ";
+      body += String(filterGuard.isClosed() ? 1 : 0) + "\n";
+
+      // Срабатывания монотонно растут в пределах периода — counter,
+      // чтобы работали rate() и increase()
+      body += "# HELP smartwatermeter_filter_trips_total Guard activations since boot\n";
+      body += "# TYPE smartwatermeter_filter_trips_total counter\n";
+      body += "smartwatermeter_filter_trips_total " + String(filterGuard.trips()) + "\n";
+
+      body += "# HELP smartwatermeter_filter_closed_seconds_total Time with inlet shut\n";
+      body += "# TYPE smartwatermeter_filter_closed_seconds_total counter\n";
+      body += "smartwatermeter_filter_closed_seconds_total " + String(filterGuard.closedSec()) + "\n";
+
+      // Потерянный датчик — отдельная серия: без неё «клапан открыт»
+      // выглядел бы как «всё хорошо», хотя защита ослепла
+      body += "# HELP smartwatermeter_filter_sensor_lost Cold sensor is not responding\n";
+      body += "# TYPE smartwatermeter_filter_sensor_lost gauge\n";
+      body += "smartwatermeter_filter_sensor_lost ";
+      body += String(filterGuard.isSensorLost() ? 1 : 0) + "\n";
+    }
+
     body += "# HELP smartwatermeter_uptime_seconds System uptime\n";
     body += "# TYPE smartwatermeter_uptime_seconds gauge\n";
     body += "smartwatermeter_uptime_seconds " + String(millis() / 1000) + "\n";
@@ -1117,11 +1225,80 @@ void sendDailyReport() {
   body += "=== Meter Readings ===\n";
   body += "Hot: " + String(config.data.meterHotM3, 3) + " m3\n";
   body += "Cold: " + String(config.data.meterColdM3, 3) + " m3\n\n";
+  if (config.data.filterEnabled) {
+    body += "=== Filter Guard ===\n";
+    body += "Trips this period: " + String(filterGuard.trips()) + "\n";
+    body += "Max cold water: ";
+    body += (filterGuard.hasMaxTemp()
+      ? TemperatureSensors::formatTemp(filterGuard.maxTempC()) : String("n/a")) + " C\n";
+    body += "Inlet shut for: " + String(filterGuard.closedSec() / 60) + " min\n";
+    body += "Valve now: " + String(filterGuard.isClosed() ? "CLOSED" : "open") + "\n";
+    if (filterGuard.isSensorLost()) body += "WARNING: cold sensor not responding\n";
+    body += "\n";
+  }
   body += "=== System Info ===\n";
   body += "Uptime: " + String(millis() / 3600000) + " hours\n";
   body += String("WiFi: ") + (wifiConnected ? "Connected" : "Disconnected") + "\n";
   body += "IP: " + (wifiConnected ? WiFi.localIP().toString() : "N/A") + "\n";
   trySendEmail("Daily Report - SmartWaterMeter", body);
+  // Статистика фильтра — за период между отчётами, а не с загрузки
+  filterGuard.resetStats();
+}
+
+// Вызывается из filterGuard.handle() в середине разбора датчиков.
+// Здесь ничего блокирующего: только складываем событие и, если
+// разрешено, толкаем состояние в MQTT — публикация асинхронная.
+void onFilterEvent(FilterGuard::Event ev, float tempC) {
+  uint8_t next = (uint8_t)((filterAlertHead + 1) % FILTER_ALERT_QUEUE);
+  if (next != filterAlertTail) {
+    filterAlerts[filterAlertHead].ev = ev;
+    filterAlerts[filterAlertHead].tempC = tempC;
+    filterAlertHead = next;
+  }
+
+  if (config.data.filterNotifyMqtt && mqtt.isConnected()) {
+    MqttClient::Payload mp;
+    fillMqttPayload(mp);
+    mqtt.publishState(mp);
+  }
+
+  // Состояние на вкладке Dashboard должно смениться сразу, не дожидаясь
+  // очередной секундной рассылки
+  JsonDocument doc;
+  doc["type"] = "filterEvent";
+  doc["event"] = FilterGuard::eventName(ev);
+  doc["closed"] = filterGuard.isClosed();
+  doc["sensorLost"] = filterGuard.isSensorLost();
+  doc["temp"] = serialized(String(tempC, 1));
+  wsBroadcastJson(doc);
+}
+
+// Письма шлём из loop(): ESP_Mail_Client блокирует на секунды, и делать
+// это внутри разбора датчиков значило бы ронять импульсы счётчиков.
+void handleFilterAlerts() {
+  if (filterAlertTail == filterAlertHead) return;
+  if (!config.data.filterNotifyEmail) {     // очередь всё равно чистим
+    filterAlertTail = filterAlertHead;
+    return;
+  }
+  if (!wifiConnected || strlen(config.data.smtpEmail) == 0) {
+    filterAlertTail = filterAlertHead;
+    return;
+  }
+
+  FilterAlert a = filterAlerts[filterAlertTail];
+  filterAlertTail = (uint8_t)((filterAlertTail + 1) % FILTER_ALERT_QUEUE);
+
+  String subject = String("Filter Guard: ") + FilterGuard::eventName(a.ev);
+  String body = String(deviceName) + " - Filter Guard\n";
+  body += "================================\n\n";
+  body += "Event: " + String(FilterGuard::eventName(a.ev)) + "\n";
+  body += "Cold water: " + TemperatureSensors::formatTemp(a.tempC) + " C\n";
+  body += "Thresholds: " + String(filterGuard.onThreshold(), 1) + " / "
+        + String(filterGuard.offThreshold(), 1) + " C\n";
+  body += "Valve now: " + String(filterGuard.isClosed() ? "CLOSED" : "open") + "\n";
+  body += "Trips this period: " + String(filterGuard.trips()) + "\n";
+  trySendEmail(subject, body);
 }
 
 void onCalibrateDone(int sensorIndex, bool success) {

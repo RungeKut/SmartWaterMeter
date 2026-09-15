@@ -126,6 +126,15 @@ function baseConfig(overrides) {
     mqttPort: 1883,
     mqttUser: '',
     mqttIntervalSec: 0,
+    reportEnabled: true,
+    filterEnabled: false,
+    filterTempOnC: 35,
+    filterTempOffC: 30,
+    filterRelayActiveLow: false,
+    filterNotifyMqtt: true,
+    filterNotifyEmail: true,
+    filterMetricsEnabled: true,
+    filterRelayPin: 5,
   }, overrides || {});
 }
 

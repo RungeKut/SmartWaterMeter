@@ -255,6 +255,27 @@
 
 Если выбранный датчик уже закреплён за другим каналом, тот освобождается, и это указано в `message`.
 
+### `filterEvent`
+
+Приходит в момент переключения защиты фильтра, не дожидаясь очередной секундной рассылки: состояние клапана на Dashboard должно смениться сразу.
+
+```json
+{ "type": "filterEvent", "event": "valve closed",
+  "closed": true, "sensorLost": false, "temp": 47.2 }
+```
+
+Поле `event` — одно из `valve closed`, `valve opened`, `cold sensor lost`, `cold sensor back`.
+
+Текущее состояние фильтра приходит и в составе `sensors`/`fullState`:
+
+```json
+"filter": { "enabled": true, "closed": false, "sensorLost": false,
+            "trips": 3, "closedSec": 4320, "tempOn": 35.0,
+            "tempOff": 30.0, "maxTemp": 47.2 }
+```
+
+`maxTemp` равен `null`, пока за период не было ни одного достоверного измерения — отсутствие данных и ноль это разные вещи.
+
 ## Как работает WebSocket-соединение
 
 1. Клиент подключается к `ws://<host>/ws`

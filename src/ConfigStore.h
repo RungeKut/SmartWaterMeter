@@ -7,7 +7,16 @@
 
 #include <Arduino.h>
 #include <EEPROM.h>
+#include <math.h>
 #include "Log.h"
+
+// Пороги защиты фильтра по умолчанию. Объявлены здесь, а не в
+// FilterGuard.h: ConfigStore нужен раньше и не должен зависеть от
+// модуля, который сам подключает ConfigStore.
+#ifndef FILTER_TEMP_ON_DEFAULT
+#define FILTER_TEMP_ON_DEFAULT   35.0f
+#define FILTER_TEMP_OFF_DEFAULT  30.0f
+#endif
 
 // Магическое число для проверки валидности данных в EEPROM
 #define EEPROM_MAGIC 0x5A4B
@@ -70,6 +79,22 @@ struct ConfigData {
   char mqttUser[32];
   char mqttPass[32];
   uint16_t mqttIntervalSec;   // период публикации состояния, 0 = по умолчанию
+
+  // Защита осмотического фильтра от подмеса ГВС в ХВС.
+  // И снова В КОНЕЦ структуры — смещения прежних полей не меняются,
+  // существующие настройки читаются как есть. Признак нетронутой
+  // flash здесь — NaN во filterTempOnC (0xFFFFFFFF как float).
+  bool  filterEnabled;
+  float filterTempOnC;         // верхний порог: реле включается, клапан закрыт
+  float filterTempOffC;        // нижний порог: реле отключается
+  bool  filterRelayActiveLow;  // управляющий уровень реле
+  bool  filterNotifyMqtt;      // событие уходит в Home Assistant
+  bool  filterNotifyEmail;     // событие уходит письмом
+  bool  filterMetricsEnabled;  // метрики фильтра отдаются в /metrics
+
+  // Общий выключатель плановых писем. SMTP при этом остаётся
+  // настроенным: Test Email и алерты фильтра продолжают работать.
+  bool  reportEnabled;
 };
 
 class ConfigStore {
@@ -121,6 +146,37 @@ public:
     data.mqttEnabled = (data.mqttEnabled != 0);
   }
 
+  // Второй блок, добавленный в конец структуры, — защита фильтра.
+  // Проверяется отдельно от MQTT: у пользователя, прошившегося на
+  // промежуточной версии, блок MQTT уже инициализирован, а этот ещё нет.
+  //
+  // Признак нетронутой flash — NaN: 0xFFFFFFFF, прочитанные как float,
+  // дают именно его. Сравнение через !(v > 0) ловит и NaN, и ноль.
+  void sanitizeFilterFields() {
+    if (isnan(data.filterTempOnC) || isnan(data.filterTempOffC)
+        || !(data.filterTempOnC > 0.0f)) {
+      Log.println(F("[EEPROM] Блок защиты фильтра не инициализирован -> по умолчанию"));
+      data.filterEnabled = false;
+      data.filterTempOnC = FILTER_TEMP_ON_DEFAULT;
+      data.filterTempOffC = FILTER_TEMP_OFF_DEFAULT;
+      data.filterRelayActiveLow = false;
+      data.filterNotifyMqtt = true;
+      data.filterNotifyEmail = true;
+      data.filterMetricsEnabled = true;
+      // true, а не false: у тех, кто уже пользуется плановыми
+      // отчётами, обновление не должно их молча отключить.
+      data.reportEnabled = true;
+      return;
+    }
+
+    data.filterEnabled = (data.filterEnabled != 0);
+    data.filterRelayActiveLow = (data.filterRelayActiveLow != 0);
+    data.filterNotifyMqtt = (data.filterNotifyMqtt != 0);
+    data.filterNotifyEmail = (data.filterNotifyEmail != 0);
+    data.filterMetricsEnabled = (data.filterMetricsEnabled != 0);
+    data.reportEnabled = (data.reportEnabled != 0);
+  }
+
   void load() {
     EEPROM.get(0, data);
     if (data.magic != EEPROM_MAGIC) {
@@ -134,6 +190,7 @@ public:
         data.wifiSSID, strlen(data.wifiPass) > 0 ? "да" : "нет");
     }
     sanitizeNewFields();
+    sanitizeFilterFields();
   }
   
   // Запись в EEPROM. Ядро ESP8266 само сравнивает буфер с текущим
@@ -185,7 +242,18 @@ public:
     data.mqttPass[0] = '\0';
     data.mqttIntervalSec = 0;
 
-    // Расписание отчёта по умолчанию: ежедневно в 09:00
+    // Защита фильтра выключена по умолчанию: без реле на ноге она
+    // бессмысленна, а включать её за пользователя нельзя
+    data.filterEnabled = false;
+    data.filterTempOnC = FILTER_TEMP_ON_DEFAULT;
+    data.filterTempOffC = FILTER_TEMP_OFF_DEFAULT;
+    data.filterRelayActiveLow = false;
+    data.filterNotifyMqtt = true;
+    data.filterNotifyEmail = true;
+    data.filterMetricsEnabled = true;
+
+    // Расписание отчёта по умолчанию: ежедневно в 09:00, отправка включена
+    data.reportEnabled = true;
     data.reportHour = 9;
     data.reportMinute = 0;
     data.reportSchedule = 0;  // daily

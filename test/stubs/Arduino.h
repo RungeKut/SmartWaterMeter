@@ -50,7 +50,12 @@ inline void advanceMillis(uint32_t ms) { fakeTimeUs += (uint64_t)ms * 1000ULL; }
 // ---- пины ----
 inline void pinMode(uint8_t, uint8_t) {}
 inline int digitalRead(uint8_t pin) { return pin < 24 ? fakePinLevel[pin] : HIGH; }
-inline void digitalWrite(uint8_t, uint8_t) {}
+// Запись видна тестам через тот же fakePinLevel: иначе уровень на
+// ноге реле проверить было бы нечем. Для входов это безвредно —
+// туда тест пишет напрямую, а digitalWrite по ним не вызывается.
+inline void digitalWrite(uint8_t pin, uint8_t level) {
+  if (pin < 24) fakePinLevel[pin] = level;
+}
 inline uint8_t digitalPinToInterrupt(uint8_t pin) { return pin; }
 inline void attachInterrupt(uint8_t, void (*)(), int) {}
 inline void detachInterrupt(uint8_t) {}

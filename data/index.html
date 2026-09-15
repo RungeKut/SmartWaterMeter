@@ -285,6 +285,16 @@ label { font-size: 12px; color: var(--text-secondary); display: block; margin-bo
     </div>
   </div>
 
+  <div class="card" id="filterCard" style="display:none">
+    <h3>Osmosis Filter</h3>
+    <div class="row"><span class="label">Inlet valve</span><span id="filterState">--</span></div>
+    <div class="row"><span class="label">Cold water now</span><span id="filterTempNow">--</span></div>
+    <div class="row"><span class="label">Thresholds</span><span id="filterThresholds">--</span></div>
+    <div class="row"><span class="label">Trips this period</span><span id="filterTrips">--</span></div>
+    <div class="row"><span class="label">Peak cold water</span><span id="filterMaxTemp">--</span></div>
+    <div class="row"><span class="label">Shut for</span><span id="filterClosedFor">--</span></div>
+  </div>
+
   <div class="card">
     <h3>System</h3>
     <div class="row"><span class="label">WiFi</span><span id="sysWiFi">--</span></div>
@@ -328,6 +338,15 @@ label { font-size: 12px; color: var(--text-secondary); display: block; margin-bo
 
   <div class="section-title">Report Schedule</div>
   <div class="card">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+      <input id="cfgReportEnabled" type="checkbox" style="width:auto;margin:0">
+      <label for="cfgReportEnabled" style="margin:0">Send scheduled reports</label>
+    </div>
+    <div style="font-size:12px;color:var(--text-secondary);margin-bottom:10px">
+      Turns the scheduled email off without clearing SMTP — Test Email and
+      filter alerts keep working.
+    </div>
+
     <label>Repeat</label>
     <div class="seg" id="schedSeg">
       <button type="button" data-sched="0">Daily</button>
@@ -368,6 +387,53 @@ label { font-size: 12px; color: var(--text-secondary); display: block; margin-bo
       Entities appear in Home Assistant automatically — no YAML needed.
       Meter readings are also published immediately on every pulse.
       Base topic: <span class="addr" id="mqttBase">smartwatermeter/&lt;MAC&gt;</span>
+    </div>
+  </div>
+
+  <div class="section-title">Osmosis Filter Guard</div>
+  <div class="card">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+      <input id="cfgFilterEnabled" type="checkbox" style="width:auto;margin:0">
+      <label for="cfgFilterEnabled" style="margin:0">Enable filter protection</label>
+    </div>
+    <div style="font-size:12px;color:var(--text-secondary);margin-bottom:10px">
+      Hot water bleeds into the cold line through neighbouring flats, and the
+      osmosis membrane is not built for it. When cold water reaches the upper
+      threshold a relay on <span class="addr" id="filterPinHint">D1</span>
+      shuts the solenoid valve feeding the filter; it reopens at the lower one.
+    </div>
+
+    <label>Close at, &deg;C</label>
+    <input id="cfgFilterOn" type="text" inputmode="decimal" placeholder="35">
+    <label>Reopen at, &deg;C</label>
+    <input id="cfgFilterOff" type="text" inputmode="decimal" placeholder="30">
+    <div id="filterHystHint" class="hint info" style="margin-top:8px"></div>
+
+    <div style="display:flex;align-items:center;gap:8px;margin-top:10px">
+      <input id="cfgFilterActiveLow" type="checkbox" style="width:auto;margin:0">
+      <label for="cfgFilterActiveLow" style="margin:0">Relay module is active LOW</label>
+    </div>
+    <div style="font-size:12px;color:var(--text-secondary);margin-top:6px">
+      The valve must be <strong>normally open</strong>: with the board off the
+      filter keeps working and the coil is only energised during an alarm.
+    </div>
+
+    <label style="margin-top:12px">Announce events via</label>
+    <div style="display:flex;align-items:center;gap:8px">
+      <input id="cfgFilterNotifyMqtt" type="checkbox" style="width:auto;margin:0">
+      <label for="cfgFilterNotifyMqtt" style="margin:0">Home Assistant (MQTT)</label>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;margin-top:6px">
+      <input id="cfgFilterNotifyEmail" type="checkbox" style="width:auto;margin:0">
+      <label for="cfgFilterNotifyEmail" style="margin:0">Email</label>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;margin-top:6px">
+      <input id="cfgFilterMetrics" type="checkbox" style="width:auto;margin:0">
+      <label for="cfgFilterMetrics" style="margin:0">Prometheus (/metrics)</label>
+    </div>
+    <div style="font-size:12px;color:var(--text-secondary);margin-top:6px">
+      Prometheus is a pull system — nothing is sent to it. The checkbox decides
+      whether the filter series are exposed on <code>/metrics</code> at all.
     </div>
   </div>
 
@@ -512,6 +578,16 @@ function handleMessage(msg) {
         updateOTABanner();
       }
       break;
+    case 'filterEvent':
+      // Устройство сообщает о переключении сразу, не дожидаясь
+      // очередной секундной рассылки
+      if (state && state.filter) {
+        state.filter.closed = msg.closed;
+        state.filter.sensorLost = msg.sensorLost;
+      }
+      updateFilterCard();
+      showToast('Filter: ' + msg.event + ' at ' + msg.temp + ' °C');
+      break;
     case 'saveConfigResult':
       // Устройство приняло настройки — с этого момента ему снова можно
       // заполнять форму (после перезагрузки придёт свежий fullState)
@@ -591,6 +667,8 @@ function updateDashboard() {
   document.getElementById('meterCold').textContent = m.cold_m3 !== undefined ? m.cold_m3.toFixed(3) : '--';
 
   // System
+  updateFilterCard();
+
   const connected = state.wifi === 'connected';
   document.getElementById('sysWiFi').innerHTML = connected
     ? '<span class="badge ok">Connected</span>'
@@ -705,6 +783,75 @@ function updateSettings() {
   document.getElementById('cfgLPC').value = cfg.litersPerPulseCold !== undefined ? cfg.litersPerPulseCold : 1.0;
   document.getElementById('cfgDbClosed').value = cfg.debounceClosedMs !== undefined ? cfg.debounceClosedMs : 0;
   document.getElementById('cfgDbOpen').value = cfg.debounceOpenMs !== undefined ? cfg.debounceOpenMs : 0;
+
+  document.getElementById('cfgReportEnabled').checked = cfg.reportEnabled !== false;
+  document.getElementById('cfgFilterEnabled').checked = !!cfg.filterEnabled;
+  document.getElementById('cfgFilterOn').value = cfg.filterTempOnC !== undefined ? cfg.filterTempOnC : 35;
+  document.getElementById('cfgFilterOff').value = cfg.filterTempOffC !== undefined ? cfg.filterTempOffC : 30;
+  document.getElementById('cfgFilterActiveLow').checked = !!cfg.filterRelayActiveLow;
+  document.getElementById('cfgFilterNotifyMqtt').checked = !!cfg.filterNotifyMqtt;
+  document.getElementById('cfgFilterNotifyEmail').checked = !!cfg.filterNotifyEmail;
+  document.getElementById('cfgFilterMetrics').checked = !!cfg.filterMetricsEnabled;
+  if (cfg.filterRelayPin !== undefined) {
+    document.getElementById('filterPinHint').textContent = 'GPIO' + cfg.filterRelayPin;
+  }
+  updateHystHint();
+}
+
+// Подсказка под порогами: гистерезис — не украшение, при слипшихся
+// порогах реле щёлкало бы на каждой десятой градуса, поэтому устройство
+// такие настройки чинит само, и об этом лучше сказать заранее.
+function updateHystHint() {
+  const el = document.getElementById('filterHystHint');
+  if (!el) return;
+  const on = parseDecimal(document.getElementById('cfgFilterOn').value);
+  const off = parseDecimal(document.getElementById('cfgFilterOff').value);
+  if (on === null || off === null) { el.textContent = 'Both thresholds must be numbers.'; return; }
+  if (off >= on) {
+    el.innerHTML = 'Reopen must be <strong>below</strong> close, otherwise the relay would'
+      + ' chatter. The device would force it down to ' + (on - 2).toFixed(1) + ' °C.';
+    return;
+  }
+  el.textContent = 'Hysteresis ' + (on - off).toFixed(1) + ' °C — the valve reopens only after'
+    + ' cold water drops to ' + off.toFixed(1) + ' °C.';
+}
+
+function formatMinutes(sec) {
+  if (sec === undefined || sec === null) return '--';
+  if (sec < 60) return sec + ' s';
+  const m = Math.floor(sec / 60);
+  if (m < 60) return m + ' min';
+  return Math.floor(m / 60) + ' h ' + (m % 60) + ' min';
+}
+
+function updateFilterCard() {
+  const card = document.getElementById('filterCard');
+  if (!card) return;
+  const f = state && state.filter;
+  // Карточку показываем только когда защита включена: незанятая нога
+  // реле есть у всех, а фильтр стоит не у каждого
+  if (!f || !f.enabled) { card.style.display = 'none'; return; }
+  card.style.display = '';
+
+  const t = (state.temperatures || {}).cold;
+  let badge;
+  if (f.sensorLost) {
+    // Слепая защита опаснее выключенной: о ней надо кричать
+    badge = '<span class="badge err">sensor lost</span>';
+  } else if (f.closed) {
+    badge = '<span class="badge err">SHUT &mdash; hot water detected</span>';
+  } else {
+    badge = '<span class="badge ok">open</span>';
+  }
+  document.getElementById('filterState').innerHTML = badge;
+  document.getElementById('filterTempNow').textContent =
+    (t === null || t === undefined) ? '--' : t.toFixed(1) + ' °C';
+  document.getElementById('filterThresholds').textContent =
+    f.tempOn + ' / ' + f.tempOff + ' °C';
+  document.getElementById('filterTrips').textContent = f.trips;
+  document.getElementById('filterMaxTemp').textContent =
+    (f.maxTemp === null || f.maxTemp === undefined) ? '--' : f.maxTemp + ' °C';
+  document.getElementById('filterClosedFor').textContent = formatMinutes(f.closedSec);
 }
 
 function updateMqttStatus() {
@@ -829,6 +976,10 @@ document.querySelectorAll('#schedSeg button').forEach(b => {
     });
   });
 })();
+
+['cfgFilterOn', 'cfgFilterOff'].forEach(id => {
+  document.getElementById(id).addEventListener('input', updateHystHint);
+});
 
 document.getElementById('cfgReportTime').addEventListener('change', updateSchedPreview);
 document.getElementById('cfgReportDay').addEventListener('change', updateSchedPreview);
@@ -963,6 +1114,16 @@ function collectConfig(errors) {
   }
 
   const t = getReportTime();
+
+  // Пороги считаем до сборки объекта: их нужно сверить между собой.
+  // Схлопнутый гистерезис — не мелочь: реле начало бы щёлкать на каждой
+  // десятой градуса, изнашивая себя и клапан.
+  const filterOn = num('cfgFilterOn', 'Close at', 35, {min: 20, max: 90});
+  const filterOff = num('cfgFilterOff', 'Reopen at', 30, {min: 5, max: 85});
+  if (document.getElementById('cfgFilterEnabled').checked && filterOff >= filterOn) {
+    errors.push('Reopen at: must be below "Close at" (' + filterOn + ')');
+  }
+
   return {
     deviceName: document.getElementById('cfgDeviceName').value,
     mqttEnabled: document.getElementById('cfgMqttEnabled').checked,
@@ -991,6 +1152,15 @@ function collectConfig(errors) {
     litersPerPulseCold: num('cfgLPC', 'L per pulse (Cold)', 1.0, {min: 0.001, max: 1000}),
     debounceClosedMs: num('cfgDbClosed', 'Min closed ms', 0, {int: true, min: 0, max: 5000}),
     debounceOpenMs: num('cfgDbOpen', 'Min open ms', 0, {int: true, min: 0, max: 60000}),
+
+    reportEnabled: document.getElementById('cfgReportEnabled').checked,
+    filterEnabled: document.getElementById('cfgFilterEnabled').checked,
+    filterTempOnC: filterOn,
+    filterTempOffC: filterOff,
+    filterRelayActiveLow: document.getElementById('cfgFilterActiveLow').checked,
+    filterNotifyMqtt: document.getElementById('cfgFilterNotifyMqtt').checked,
+    filterNotifyEmail: document.getElementById('cfgFilterNotifyEmail').checked,
+    filterMetricsEnabled: document.getElementById('cfgFilterMetrics').checked,
   };
 }
 

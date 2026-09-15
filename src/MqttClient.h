@@ -61,6 +61,11 @@ public:
     uint32_t uptimeSec;
     uint32_t freeHeap;
     uint16_t debounceClosedMs, debounceOpenMs;
+
+    // Защита осмотического фильтра
+    bool  filterEnabled, filterClosed, filterSensorLost;
+    uint32_t filterTrips;
+    float filterTempOnC, filterTempOffC;
   };
 
   typedef void (*CommandCallback)(const String &cmd, const String &value);
@@ -108,6 +113,7 @@ private:
     const char *category;    // diagnostic / config / nullptr
     const char *command;     // суффикс cmd-темы для button/number
     const char *extra;       // доп. поля JSON (диапазон для number)
+    bool filterOnly;         // публиковать только когда фильтр показан в HA
   };
 
   static const EntityDef *entities(int &count) {
@@ -156,10 +162,35 @@ private:
         "\"min\":0,\"max\":5000,\"step\":1,\"mode\":\"box\"" },
       { "number", "debounce_open", "Антидребезг: размыкание", "cfg.debounce_open",
         nullptr, nullptr, "ms", "config", "debounce_open",
-        "\"min\":0,\"max\":60000,\"step\":1,\"mode\":\"box\"" }
+        "\"min\":0,\"max\":60000,\"step\":1,\"mode\":\"box\"", false },
+
+      // --- защита осмотического фильтра ---
+      // device_class problem: в HA "ON" у такой сущности подсвечивается
+      // как неисправность, а это ровно наш случай — идёт подмес ГВС.
+      { "binary_sensor", "filter_closed", "Фильтр перекрыт", "filter.closed",
+        "problem", nullptr, nullptr, nullptr, nullptr, nullptr, true },
+      { "binary_sensor", "filter_sensor_lost", "Датчик ХВС потерян", "filter.sensor_lost",
+        "problem", nullptr, nullptr, "diagnostic", nullptr, nullptr, true },
+      { "sensor", "filter_trips", "Срабатываний защиты", "filter.trips",
+        nullptr, "total_increasing", nullptr, "diagnostic", nullptr, nullptr, true },
+      { "number", "filter_temp_on", "Порог закрытия", "cfg.filter_on",
+        "temperature", nullptr, "°C", "config", "filter_temp_on",
+        "\"min\":20,\"max\":90,\"step\":0.5,\"mode\":\"box\"", true },
+      { "number", "filter_temp_off", "Порог открытия", "cfg.filter_off",
+        "temperature", nullptr, "°C", "config", "filter_temp_off",
+        "\"min\":5,\"max\":85,\"step\":0.5,\"mode\":\"box\"", true }
     };
     count = sizeof(defs) / sizeof(defs[0]);
     return defs;
+  }
+
+  // Снять сущность: пустая retained-нагрузка удаляет её из Home
+  // Assistant. Нужно, когда пользователь выключил показ фильтра в HA —
+  // иначе в карточке навсегда осталась бы висеть недоступная сущность.
+  void retractDiscoveryEntity(const EntityDef &e) {
+    String topic = String(MQTT_DISCOVERY_PREFIX) + "/" + e.component + "/"
+                 + _id + "/" + e.object + "/config";
+    _mqtt.publish(topic.c_str(), 0, true, "");
   }
 
   void publishDiscoveryEntity(const EntityDef &e) {
@@ -312,7 +343,15 @@ public:
       if (now - _lastDiscoveryMs >= MQTT_DISCOVERY_STEP_MS) {
         int count;
         const EntityDef *defs = entities(count);
-        publishDiscoveryEntity(defs[_discoveryStep]);
+        // Настройку берём из ConfigStore, а не из Payload: автодискавери
+        // начинается сразу после connect, когда состояние ещё ни разу
+        // не публиковалось и поле было бы не заполнено.
+        bool showFilter = _config && _config->data.filterNotifyMqtt;
+        if (defs[_discoveryStep].filterOnly && !showFilter) {
+          retractDiscoveryEntity(defs[_discoveryStep]);
+        } else {
+          publishDiscoveryEntity(defs[_discoveryStep]);
+        }
         _lastDiscoveryMs = now;
         _discoveryStep++;
         if (_discoveryStep >= count) {
@@ -355,9 +394,16 @@ public:
     s["uptime"] = p.uptimeSec;
     s["heap"] = p.freeHeap;
 
+    JsonObject f = doc["filter"].to<JsonObject>();
+    f["closed"] = p.filterClosed ? "ON" : "OFF";
+    f["sensor_lost"] = p.filterSensorLost ? "ON" : "OFF";
+    f["trips"] = p.filterTrips;
+
     JsonObject c = doc["cfg"].to<JsonObject>();
     c["debounce_closed"] = p.debounceClosedMs;
     c["debounce_open"] = p.debounceOpenMs;
+    c["filter_on"] = serialized(String(p.filterTempOnC, 1));
+    c["filter_off"] = serialized(String(p.filterTempOffC, 1));
 
     String out;
     serializeJson(doc, out);
