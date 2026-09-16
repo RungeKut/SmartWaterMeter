@@ -64,6 +64,11 @@ uint8_t deviceMac[6];
 AsyncWebServer server(80);
 FilterGuard filterGuard;
 
+// Причина последнего сброса. Снимается один раз при старте: после
+// ESP.restart() значение перетирается, а узнать, был ли это watchdog
+// или исключение, нужно именно про ПРЕДЫДУЩИЙ запуск.
+String resetReason;
+
 // Алерты фильтра отправляются НЕ из обработчика события: письмо через
 // ESP_Mail_Client блокирует loop() на секунды, а обработчик вызывается
 // из середины разбора датчиков. Складываем в маленькое кольцо и
@@ -119,6 +124,9 @@ void wsBroadcastJson(const JsonDocument &doc);
 void wsBroadcastTelemetry(const JsonDocument &doc);
 void handleWsMessage(AsyncWebSocketClient *client, const String &msg);
 void sendFullState(AsyncWebSocketClient *client);
+void sendSystemState(AsyncWebSocketClient *client);
+void sendConfigState(AsyncWebSocketClient *client);
+void sendDiagState(AsyncWebSocketClient *client);
 void setupHttpRoutes();
 void keepOrSet(char *dst, JsonVariantConst src, size_t dstSize);
 void fillSystemState(JsonDocument &doc);
@@ -359,9 +367,12 @@ void setup() {
   snprintf(defaultDeviceName, sizeof(defaultDeviceName), "%s-%02X%02X%02X",
     AP_SSID_PREFIX, mac[3], mac[4], mac[5]);
 
+  resetReason = ESP.getResetReason();
+
   config.begin();
   applyDeviceName();   // имя из EEPROM, иначе сгенерированное по MAC
   Log.printf("\n\n=== %s ===\n", deviceName);
+  Log.printf("[Boot] Причина сброса: %s\n", resetReason.c_str());
   tempSensors.begin();
 
   // Check all sensors present
@@ -794,12 +805,29 @@ void wsBroadcastTelemetry(const JsonDocument &doc) {
   wsBroadcastJson(doc);
 }
 
-void sendFullState(AsyncWebSocketClient *client) {
+// Снимок состояния разбит на ТРИ сообщения, а не одно.
+//
+// Раньше это был один JSON примерно на 2.2 КБ, и его отправка роняла
+// плату: одновременно нужны пул ArduinoJson, строка сериализации и
+// буфер отправки — несколько килобайт крупными непрерывными кусками.
+// Свободной кучи хватало (около 15 КБ), но она измельчена, и пиковое
+// выделение не проходило. Браузер открывает WebSocket сразу после
+// загрузки страницы, поэтому перезагрузка вкладки перезагружала плату.
+//
+// Теперь каждый документ живёт и освобождается отдельно, пик втрое
+// ниже. Клиент собирает состояние из кусков — он и так это делает для
+// сообщений sensors через Object.assign.
+void sendSystemState(AsyncWebSocketClient *client) {
   JsonDocument doc;
   doc["type"] = "fullState";
-
   fillSystemState(doc);
   fillSensorState(doc);
+  wsSendJson(client, doc);
+}
+
+void sendConfigState(AsyncWebSocketClient *client) {
+  JsonDocument doc;
+  doc["type"] = "configState";
 
   JsonObject cfg = doc["config"].to<JsonObject>();
   cfg["wifiSSID"] = config.data.wifiSSID;
@@ -832,12 +860,18 @@ void sendFullState(AsyncWebSocketClient *client) {
   cfg["filterNotifyEmail"] = config.data.filterNotifyEmail;
   cfg["filterMetricsEnabled"] = config.data.filterMetricsEnabled;
   cfg["filterRelayPin"] = PIN_FILTER_RELAY;
-  // mqttPass не отдаём — как и остальные пароли
   cfg["defaultDeviceName"] = defaultDeviceName;
-  // Пароли (wifiPass/smtpPass) намеренно не отдаём клиенту
+  // Пароли (wifiPass/smtpPass/mqttPass) намеренно не отдаём клиенту
 
-  // Диагностика герконов. Кладём только в fullState (раз в 30 с по
-  // keep-alive) — в секундной рассылке это лишние байты.
+  wsSendJson(client, doc);
+}
+
+// Диагностика герконов. Отдельным сообщением и только по запросу —
+// в секундной рассылке это лишние байты.
+void sendDiagState(AsyncWebSocketClient *client) {
+  JsonDocument doc;
+  doc["type"] = "diagState";
+
   JsonArray md = doc["meterDiag"].to<JsonArray>();
   MeterCounter* meters[2] = { &meterHot, &meterCold };
   const char* names[2] = { "Hot", "Cold" };
@@ -856,6 +890,12 @@ void sendFullState(AsyncWebSocketClient *client) {
   }
 
   wsSendJson(client, doc);
+}
+
+void sendFullState(AsyncWebSocketClient *client) {
+  sendSystemState(client);
+  sendConfigState(client);
+  sendDiagState(client);
 }
 
 void handleWsMessage(AsyncWebSocketClient *client, const String &msg) {
@@ -1048,9 +1088,21 @@ void handleWsMessage(AsyncWebSocketClient *client, const String &msg) {
 // ==================== HTTP Routes ====================
 void setupHttpRoutes() {
   // SPA frontend from LittleFS (no-cache for fresh updates on reflash)
+  // no-cache, БЕЗ no-store.
+  //
+  // Разница существенная: no-store запрещал браузеру хранить копию, и
+  // каждое обновление вкладки тянуло все 58 КБ страницы заново. Просто
+  // no-cache означает «храни, но каждый раз переспрашивай» — браузер
+  // присылает If-None-Match, а сервер отвечает 304 без тела.
+  // AsyncStaticWebHandler считает ETag сам, свежесть после uploadfs
+  // при этом сохраняется.
+  //
+  // Оговорка: LittleFS не хранит время записи файла, поэтому ETag
+  // вырождается в размер. Новая страница ровно того же размера, что и
+  // старая, приедет из кэша — маловероятно, но помнить стоит.
   server.serveStatic("/", LittleFS, "/")
     .setDefaultFile("index.html")
-    .setCacheControl("no-cache, no-store, must-revalidate");
+    .setCacheControl("no-cache");
 
   // JSON API
   server.on("/api.json", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -1192,6 +1244,29 @@ void setupHttpRoutes() {
     body += F("smartwatermeter_free_heap_bytes ");
     body += String(ESP.getFreeHeap());
     body += F("\n");
+
+    // Фрагментация важнее свободного объёма. Плату уже дважды роняло
+    // при 15 КБ свободной кучи: место было, но крупного непрерывного
+    // куска не нашлось. Без этих двух серий это не видно вовсе.
+    body += F("# HELP smartwatermeter_heap_fragmentation_percent Heap fragmentation\n");
+    body += F("# TYPE smartwatermeter_heap_fragmentation_percent gauge\n");
+    body += F("smartwatermeter_heap_fragmentation_percent ");
+    body += String(ESP.getHeapFragmentation());
+    body += F("\n");
+
+    body += F("# HELP smartwatermeter_heap_max_block_bytes Largest contiguous free block\n");
+    body += F("# TYPE smartwatermeter_heap_max_block_bytes gauge\n");
+    body += F("smartwatermeter_heap_max_block_bytes ");
+    body += String(ESP.getMaxFreeBlockSize());
+    body += F("\n");
+
+    // Причина последнего сброса: отличает штатную перезагрузку от
+    // watchdog и исключения. Метка, а не число, — значение всегда 1.
+    body += F("# HELP smartwatermeter_reset_info Reason of the last reset\n");
+    body += F("# TYPE smartwatermeter_reset_info gauge\n");
+    body += F("smartwatermeter_reset_info{reason=\"");
+    body += resetReason;
+    body += F("\"} 1\n");
 
     // RSSI имеет смысл только в режиме клиента
     if (wifiConnected) {

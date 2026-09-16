@@ -556,6 +556,13 @@ function connectWS() {
 
 function handleMessage(msg) {
   switch(msg.type) {
+    // Снимок приходит тремя сообщениями: устройство больше не собирает
+    // его одним JSON на 2.2 КБ — такой пик выделения ронял плату, и
+    // обновление вкладки перезагружало её (см. docs/pitfalls.md).
+    //
+    // fullState несёт систему и датчики и приходит первым, поэтому он
+    // же и заводит объект state. config и meterDiag долетают следом и
+    // подмешиваются, не затирая уже полученное.
     case 'fullState':
       state = msg;
       updateDashboard();
@@ -563,6 +570,16 @@ function handleMessage(msg) {
       updateCalibrate();
       updateCalibrateBusTable();
       updateOTABanner();
+      break;
+    case 'configState':
+      if (!state) state = {};
+      state.config = msg.config;
+      updateSettings();
+      break;
+    case 'diagState':
+      if (!state) state = {};
+      state.meterDiag = msg.meterDiag;
+      updateMeterDiag();
       break;
     case 'sensors':
       if (state) {

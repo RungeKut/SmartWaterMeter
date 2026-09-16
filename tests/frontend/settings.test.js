@@ -128,6 +128,67 @@ suite('целочисленные поля', () => {
   });
 });
 
+// --- снимок состояния приходит тремя сообщениями ---
+//
+// Устройство больше не собирает fullState одним JSON на 2.2 КБ: такой
+// пик выделения ронял плату, и обновление вкладки её перезагружало.
+// Клиент обязан собрать состояние из кусков в любом порядке.
+
+suite('сборка состояния из трёх сообщений', () => {
+  const sysMsg = () => ({
+    type: 'fullState', uptime_sec: 42, free_heap: 15000,
+    temperatures: { cold: 18.4 }, wifi: 'connected',
+  });
+  const cfgMsg = (o) => ({ type: 'configState', config: baseConfig(o) });
+  const diagMsg = () => ({ type: 'diagState', meterDiag: [
+    { name: 'Hot', closed: false, stateAgeSec: 10, pulses: 5, bounces: 0,
+      lastClosedMs: 120, minClosedMs: 110, maxClosedMs: 130, overflow: 0 },
+  ]});
+
+  test('fullState заводит состояние, configState добавляет настройки', () => {
+    h.exec('state = null; setSettingsDirty(false); settingsLoaded = false;');
+    h.exec('handleMessage(' + JSON.stringify(sysMsg()) + ');');
+    h.exec('handleMessage(' + JSON.stringify(cfgMsg({ mqttHost: 'broker.local' })) + ');');
+    equal(h.el('cfgMqttHost').value, 'broker.local');
+  });
+
+  test('configState не затирает уже пришедшие датчики', () => {
+    h.exec('state = null; setSettingsDirty(false); settingsLoaded = false;');
+    h.exec('handleMessage(' + JSON.stringify(sysMsg()) + ');');
+    h.exec('handleMessage(' + JSON.stringify(cfgMsg()) + ');');
+    equal(h.exec('state.uptime_sec'), 42, 'системные поля на месте');
+    equal(h.exec('state.temperatures.cold'), 18.4, 'температуры на месте');
+  });
+
+  test('diagState кладёт диагностику герконов', () => {
+    h.exec('state = null;');
+    h.exec('handleMessage(' + JSON.stringify(sysMsg()) + ');');
+    h.exec('handleMessage(' + JSON.stringify(diagMsg()) + ');');
+    equal(h.exec('state.meterDiag.length'), 1);
+    equal(h.el('meterDiag').innerHTML.indexOf('Hot') >= 0, true);
+  });
+
+  // Порядок не гарантирован: сообщения идут разными кадрами
+  test('configState раньше fullState не роняет клиент', () => {
+    h.exec('state = null; setSettingsDirty(false); settingsLoaded = false;');
+    h.exec('handleMessage(' + JSON.stringify(cfgMsg({ mqttHost: 'early' })) + ');');
+    equal(h.el('cfgMqttHost').value, 'early', 'настройки применились и без fullState');
+    h.exec('handleMessage(' + JSON.stringify(sysMsg()) + ');');
+    equal(h.exec('state.uptime_sec'), 42);
+  });
+
+  // sensors приходит раз в секунду и сливается через Object.assign —
+  // конфиг он нести не должен и затирать его не имеет права
+  test('секундный sensors не сбрасывает настройки', () => {
+    h.exec('state = null; setSettingsDirty(false); settingsLoaded = false;');
+    h.exec('handleMessage(' + JSON.stringify(sysMsg()) + ');');
+    h.exec('handleMessage(' + JSON.stringify(cfgMsg({ mqttHost: 'keep-me' })) + ');');
+    h.exec('handleMessage({type:"sensors", uptime_sec: 99, temperatures:{cold: 19}});');
+    equal(h.exec('state.config.mqttHost'), 'keep-me');
+    equal(h.exec('state.uptime_sec'), 99, 'телеметрия обновилась');
+  });
+});
+
 // --- защита незаконченного ввода ---
 
 suite('fullState не затирает правки', () => {
