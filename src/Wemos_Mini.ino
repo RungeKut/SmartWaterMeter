@@ -70,6 +70,12 @@ FilterGuard filterGuard;
 // или исключение, нужно именно про ПРЕДЫДУЩИЙ запуск.
 String resetReason;
 
+// Подробности сброса: getResetReason() возвращает лишь общую категорию
+// и не отличает исключение от штатного ESP.restart() — ядро после
+// фатальной ошибки перезапускается само и помечает это как software
+// restart. getResetInfo() содержит код исключения и epc.
+String resetDetails;
+
 // Сборка входящих WebSocket-сообщений из кусков. Сообщение длиннее
 // одного TCP-сегмента (на ESP8266 около 536 байт) приезжает
 // несколькими вызовами WS_EVT_DATA.
@@ -377,11 +383,13 @@ void setup() {
     AP_SSID_PREFIX, mac[3], mac[4], mac[5]);
 
   resetReason = ESP.getResetReason();
+  resetDetails = ESP.getResetInfo();
 
   config.begin();
   applyDeviceName();   // имя из EEPROM, иначе сгенерированное по MAC
   Log.printf("\n\n=== %s ===\n", deviceName);
   Log.printf("[Boot] Причина сброса: %s\n", resetReason.c_str());
+  Log.printf("[Boot] Подробности: %s\n", resetDetails.c_str());
   tempSensors.begin();
 
   // Check all sensors present
@@ -440,6 +448,11 @@ void setup() {
       // кадр телеметрии, чем соединение — обрыв перезагружал страницу
       // настроек поверх незаконченного ввода.
       client->setCloseClientOnQueueFull(false);
+      // Автопинг раз в 10 секунд. Браузер при обновлении вкладки
+      // бросает сокет, не закрывая его, и сервер об этом не узнаёт:
+      // «призрак» остаётся в списке и продолжает получать телеметрию
+      // раз в секунду. Без пингов такие клиенты копились.
+      client->keepAlivePeriod(10);
       sendFullState(client);
     } else if (type == WS_EVT_DISCONNECT) {
       Log.printf("[WS] Client #%u disconnected\n", client->id());
@@ -505,7 +518,10 @@ void loop() {
     fillMqttPayload(mp);
     mqtt.handle(mp);
   }
-  ws.cleanupClients();
+  // Не больше двух клиентов: на этой плате каждый стоит буферов, а
+  // больше двух вкладок с интерфейсом не открывают. Третий вытесняет
+  // самого старого — так «призрак» от обновлённой вкладки уходит сразу.
+  ws.cleanupClients(2);
 
   uint32_t now = millis();
 
@@ -653,6 +669,11 @@ void loop() {
   // правок. Полсекунды хватает, чтобы очередь опустела.
   if (needsRestart && restartAtMs == 0) {
     restartAtMs = now + 500;
+    // Печатаем здесь, а не перед самым ESP.restart(): вывод в Telnet
+    // асинхронный, и строка, напечатанная за миллисекунду до сброса,
+    // до клиента не долетает. Из-за этого штатную перезагрузку было
+    // не отличить от сбоя.
+    Log.println(F("[System] Перезагрузка запланирована"));
   }
   if (restartAtMs != 0 && now > 10000 && (int32_t)(now - restartAtMs) >= 0) {
     Log.println(F("[System] Restart..."));
@@ -1288,6 +1309,12 @@ void setupHttpRoutes() {
     body += String(ESP.getMaxFreeBlockSize());
     body += F("\n");
 
+    body += F("# HELP smartwatermeter_ws_clients Connected WebSocket clients\n");
+    body += F("# TYPE smartwatermeter_ws_clients gauge\n");
+    body += F("smartwatermeter_ws_clients ");
+    body += String(ws.count());
+    body += F("\n");
+
     // Отброшенные куски входящих сообщений. Ноль — норма; рост
     // означает, что команды с веб-интерфейса до платы не доезжают.
     body += F("# HELP smartwatermeter_ws_rx_drops_total Dropped inbound WS chunks\n");
@@ -1302,6 +1329,8 @@ void setupHttpRoutes() {
     body += F("# TYPE smartwatermeter_reset_info gauge\n");
     body += F("smartwatermeter_reset_info{reason=\"");
     body += resetReason;
+    body += F("\",info=\"");
+    body += resetDetails;
     body += F("\"} 1\n");
 
     // RSSI имеет смысл только в режиме клиента
