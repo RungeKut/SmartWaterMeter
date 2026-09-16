@@ -532,11 +532,18 @@ void loop() {
     // Broadcast to all WebSocket clients.
     // Помимо датчиков шлём и системные поля — иначе uptime, heap, время
     // и IP на Dashboard замирали бы до переподключения WebSocket.
-    JsonDocument doc;
-    doc["type"] = "sensors";
-    fillSystemState(doc);
-    fillSensorState(doc);
-    wsBroadcastTelemetry(doc);
+    //
+    // Если слушать некому, документ не собираем вовсе. Раньше он
+    // строился каждую секунду независимо от числа клиентов: это около
+    // полутора килобайт аллокаций в секунду и лишняя фрагментация кучи
+    // на плате, где свободно около 18 КБ.
+    if (ws.count() > 0) {
+      JsonDocument doc;
+      doc["type"] = "sensors";
+      fillSystemState(doc);
+      fillSensorState(doc);
+      wsBroadcastTelemetry(doc);
+    }
 
     // Periodic bus rescan (every 30s) to detect newly connected/disconnected sensors
     if (now - lastBusRescan > 30000 && !tempSensors.isCalibrating()) {
@@ -958,17 +965,33 @@ void handleWsMessage(AsyncWebSocketClient *client, const String &msg) {
   }
   else if (strcmp(type, "testEmail") == 0) {
     String testBody = String(deviceName) + " - Test email\n\n";
-    testBody += "=== Temperatures ===\n";
-    testBody += "Cold: " + TemperatureSensors::formatTemp(tempSensors.getTempHVS()) + " C\n";
-    testBody += "Hot: " + TemperatureSensors::formatTemp(tempSensors.getTempGVS()) + " C\n";
-    testBody += "Heating Supply: " + TemperatureSensors::formatTemp(tempSensors.getTempSupply()) + " C\n";
-    testBody += "Heating Return: " + TemperatureSensors::formatTemp(tempSensors.getTempReturn()) + " C\n\n";
-    testBody += "=== Meter Readings ===\n";
-    testBody += "Hot: " + String(config.data.meterHotM3, 3) + " m3\n";
-    testBody += "Cold: " + String(config.data.meterColdM3, 3) + " m3\n\n";
-    testBody += "=== System ===\n";
-    testBody += "WiFi: " + String(wifiConnected ? "connected" : "disconnected") + "\n";
-    testBody += "IP: " + (wifiConnected ? WiFi.localIP().toString() : "N/A") + "\n";
+    testBody += F("=== Temperatures ===\n");
+    testBody += F("Cold: ");
+    testBody += TemperatureSensors::formatTemp(tempSensors.getTempHVS());
+    testBody += F(" C\n");
+    testBody += F("Hot: ");
+    testBody += TemperatureSensors::formatTemp(tempSensors.getTempGVS());
+    testBody += F(" C\n");
+    testBody += F("Heating Supply: ");
+    testBody += TemperatureSensors::formatTemp(tempSensors.getTempSupply());
+    testBody += F(" C\n");
+    testBody += F("Heating Return: ");
+    testBody += TemperatureSensors::formatTemp(tempSensors.getTempReturn());
+    testBody += F(" C\n\n");
+    testBody += F("=== Meter Readings ===\n");
+    testBody += F("Hot: ");
+    testBody += String(config.data.meterHotM3, 3);
+    testBody += F(" m3\n");
+    testBody += F("Cold: ");
+    testBody += String(config.data.meterColdM3, 3);
+    testBody += F(" m3\n\n");
+    testBody += F("=== System ===\n");
+    testBody += F("WiFi: ");
+    testBody += String(wifiConnected ? "connected" : "disconnected");
+    testBody += F("\n");
+    testBody += F("IP: ");
+    testBody += (wifiConnected ? WiFi.localIP().toString() : "N/A");
+    testBody += F("\n");
     trySendEmail("Test", testBody);
     JsonDocument resp;
     resp["type"] = "testEmailResult";
@@ -1032,26 +1055,50 @@ void setupHttpRoutes() {
   // JSON API
   server.on("/api.json", HTTP_GET, [](AsyncWebServerRequest *request) {
     String json = "{";
-    json += "\"device\":\"" + String(deviceName) + "\",";
-    json += "\"uptime_sec\":" + String(millis() / 1000) + ",";
-    json += "\"free_heap\":" + String(ESP.getFreeHeap()) + ",";
-    json += "\"wifi\":\"" + String(wifiConnected ? "connected" : "disconnected") + "\",";
-    json += "\"wifi_rssi\":" + String(wifiConnected ? WiFi.RSSI() : 0) + ",";
-    json += "\"ip\":\"" + (apModeActive ? WiFi.softAPIP().toString()
-                                       : WiFi.localIP().toString()) + "\",";
-    json += "\"time_valid\":" + String(timeValid ? "true" : "false") + ",";
-    json += "\"temperatures\":{";
-    json += "\"cold\":" + jsonTemp(tempSensors.getTempHVS()) + ",";
-    json += "\"hot\":" + jsonTemp(tempSensors.getTempGVS()) + ",";
-    json += "\"supply\":" + jsonTemp(tempSensors.getTempSupply()) + ",";
-    json += "\"return\":" + jsonTemp(tempSensors.getTempReturn());
-    json += "},";
-    json += "\"meters\":{";
-    json += "\"hot_m3\":" + String(config.data.meterHotM3, 3) + ",";
-    json += "\"cold_m3\":" + String(config.data.meterColdM3, 3);
-    json += "},";
-    json += "\"calibrating\":" + String(tempSensors.isCalibrating() ? "true" : "false");
-    json += "}\n";
+    json += F("\"device\":\"");
+    json += String(deviceName);
+    json += F("\",");
+    json += F("\"uptime_sec\":");
+    json += String(millis() / 1000);
+    json += F(",");
+    json += F("\"free_heap\":");
+    json += String(ESP.getFreeHeap());
+    json += F(",");
+    json += F("\"wifi\":\"");
+    json += String(wifiConnected ? "connected" : "disconnected");
+    json += F("\",");
+    json += F("\"wifi_rssi\":");
+    json += String(wifiConnected ? WiFi.RSSI() : 0);
+    json += F(",");
+    json += F("\"ip\":\"");
+    json += (apModeActive ? WiFi.softAPIP().toString() : WiFi.localIP().toString());
+    json += F("\",");
+    json += F("\"time_valid\":");
+    json += String(timeValid ? "true" : "false");
+    json += F(",");
+    json += F("\"temperatures\":{");
+    json += F("\"cold\":");
+    json += jsonTemp(tempSensors.getTempHVS());
+    json += F(",");
+    json += F("\"hot\":");
+    json += jsonTemp(tempSensors.getTempGVS());
+    json += F(",");
+    json += F("\"supply\":");
+    json += jsonTemp(tempSensors.getTempSupply());
+    json += F(",");
+    json += F("\"return\":");
+    json += jsonTemp(tempSensors.getTempReturn());
+    json += F("},");
+    json += F("\"meters\":{");
+    json += F("\"hot_m3\":");
+    json += String(config.data.meterHotM3, 3);
+    json += F(",");
+    json += F("\"cold_m3\":");
+    json += String(config.data.meterColdM3, 3);
+    json += F("},");
+    json += F("\"calibrating\":");
+    json += String(tempSensors.isCalibrating() ? "true" : "false");
+    json += F("}\n");
     request->send(200, "application/json", json);
   });
 
@@ -1059,9 +1106,9 @@ void setupHttpRoutes() {
   server.on("/confirm", HTTP_GET, [](AsyncWebServerRequest *request) {
     failsafe.confirm();
     String html = "<html><head><meta charset=\"utf-8\"><meta http-equiv=\"refresh\" content=\"3;url=/\"></head><body>";
-    html += "<h2>Прошивка подтверждена!</h2>";
-    html += "<p>Возврат на главную через 3 секунды...</p>";
-    html += "</body></html>";
+    html += F("<h2>Прошивка подтверждена!</h2>");
+    html += F("<p>Возврат на главную через 3 секунды...</p>");
+    html += F("</body></html>");
     request->send(200, "text/html; charset=utf-8", html);
   });
 
@@ -1072,8 +1119,8 @@ void setupHttpRoutes() {
     // Отсутствующий датчик не экспортируется вовсе. Отдать -127 означало
     // бы положить в график настоящую точку и испортить средние и алерты;
     // в Prometheus отсутствие серии — штатный способ сказать «данных нет».
-    body += "# HELP smartwatermeter_temperature_celsius Temperature sensors\n";
-    body += "# TYPE smartwatermeter_temperature_celsius gauge\n";
+    body += F("# HELP smartwatermeter_temperature_celsius Temperature sensors\n");
+    body += F("# TYPE smartwatermeter_temperature_celsius gauge\n");
     const char* tNames[4] = { "cold", "hot", "supply", "return" };
     float tVals[4] = {
       tempSensors.getTempHVS(), tempSensors.getTempGVS(),
@@ -1081,84 +1128,108 @@ void setupHttpRoutes() {
     };
     for (int i = 0; i < 4; i++) {
       if (tVals[i] == DEVICE_DISCONNECTED_C || tVals[i] < -50) continue;
-      body += "smartwatermeter_temperature_celsius{sensor=\"";
+      body += F("smartwatermeter_temperature_celsius{sensor=\"");
       body += tNames[i];
-      body += "\"} " + String(tVals[i], 1) + "\n";
+      body += F("\"} ");
+      body += String(tVals[i], 1);
+      body += F("\n");
     }
 
     // Показания счётчиков монотонно растут — это counter, а не gauge.
     // Только с типом counter имеют смысл rate() и increase(), то есть
     // расход за час или за сутки.
-    body += "# HELP smartwatermeter_water_m3_total Total water consumption\n";
-    body += "# TYPE smartwatermeter_water_m3_total counter\n";
-    body += "smartwatermeter_water_m3_total{type=\"hot\"} " + String(config.data.meterHotM3, 3) + "\n";
-    body += "smartwatermeter_water_m3_total{type=\"cold\"} " + String(config.data.meterColdM3, 3) + "\n";
+    body += F("# HELP smartwatermeter_water_m3_total Total water consumption\n");
+    body += F("# TYPE smartwatermeter_water_m3_total counter\n");
+    body += F("smartwatermeter_water_m3_total{type=\"hot\"} ");
+    body += String(config.data.meterHotM3, 3);
+    body += F("\n");
+    body += F("smartwatermeter_water_m3_total{type=\"cold\"} ");
+    body += String(config.data.meterColdM3, 3);
+    body += F("\n");
 
     // Аптайм — gauge: он сбрасывается при перезагрузке
     // Метрики фильтра отдаются по галочке. Prometheus ничего не
     // «получает» — он опрашивает сам, поэтому «уведомлять через
     // Prometheus» здесь означает именно «выставлять серию наружу».
     if (config.data.filterMetricsEnabled) {
-      body += "# HELP smartwatermeter_filter_valve_closed Osmosis filter inlet valve is shut\n";
-      body += "# TYPE smartwatermeter_filter_valve_closed gauge\n";
-      body += "smartwatermeter_filter_valve_closed ";
-      body += String(filterGuard.isClosed() ? 1 : 0) + "\n";
+      body += F("# HELP smartwatermeter_filter_valve_closed Osmosis filter inlet valve is shut\n");
+      body += F("# TYPE smartwatermeter_filter_valve_closed gauge\n");
+      body += F("smartwatermeter_filter_valve_closed ");
+      body += String(filterGuard.isClosed() ? 1 : 0);
+      body += F("\n");
 
       // Срабатывания монотонно растут в пределах периода — counter,
       // чтобы работали rate() и increase()
-      body += "# HELP smartwatermeter_filter_trips_total Guard activations since boot\n";
-      body += "# TYPE smartwatermeter_filter_trips_total counter\n";
-      body += "smartwatermeter_filter_trips_total " + String(filterGuard.trips()) + "\n";
+      body += F("# HELP smartwatermeter_filter_trips_total Guard activations since boot\n");
+      body += F("# TYPE smartwatermeter_filter_trips_total counter\n");
+      body += F("smartwatermeter_filter_trips_total ");
+      body += String(filterGuard.trips());
+      body += F("\n");
 
-      body += "# HELP smartwatermeter_filter_closed_seconds_total Time with inlet shut\n";
-      body += "# TYPE smartwatermeter_filter_closed_seconds_total counter\n";
-      body += "smartwatermeter_filter_closed_seconds_total " + String(filterGuard.closedSec()) + "\n";
+      body += F("# HELP smartwatermeter_filter_closed_seconds_total Time with inlet shut\n");
+      body += F("# TYPE smartwatermeter_filter_closed_seconds_total counter\n");
+      body += F("smartwatermeter_filter_closed_seconds_total ");
+      body += String(filterGuard.closedSec());
+      body += F("\n");
 
       // Потерянный датчик — отдельная серия: без неё «клапан открыт»
       // выглядел бы как «всё хорошо», хотя защита ослепла
-      body += "# HELP smartwatermeter_filter_sensor_lost Cold sensor is not responding\n";
-      body += "# TYPE smartwatermeter_filter_sensor_lost gauge\n";
-      body += "smartwatermeter_filter_sensor_lost ";
-      body += String(filterGuard.isSensorLost() ? 1 : 0) + "\n";
+      body += F("# HELP smartwatermeter_filter_sensor_lost Cold sensor is not responding\n");
+      body += F("# TYPE smartwatermeter_filter_sensor_lost gauge\n");
+      body += F("smartwatermeter_filter_sensor_lost ");
+      body += String(filterGuard.isSensorLost() ? 1 : 0);
+      body += F("\n");
     }
 
-    body += "# HELP smartwatermeter_uptime_seconds System uptime\n";
-    body += "# TYPE smartwatermeter_uptime_seconds gauge\n";
-    body += "smartwatermeter_uptime_seconds " + String(millis() / 1000) + "\n";
+    body += F("# HELP smartwatermeter_uptime_seconds System uptime\n");
+    body += F("# TYPE smartwatermeter_uptime_seconds gauge\n");
+    body += F("smartwatermeter_uptime_seconds ");
+    body += String(millis() / 1000);
+    body += F("\n");
 
-    body += "# HELP smartwatermeter_free_heap_bytes Free heap memory\n";
-    body += "# TYPE smartwatermeter_free_heap_bytes gauge\n";
-    body += "smartwatermeter_free_heap_bytes " + String(ESP.getFreeHeap()) + "\n";
+    body += F("# HELP smartwatermeter_free_heap_bytes Free heap memory\n");
+    body += F("# TYPE smartwatermeter_free_heap_bytes gauge\n");
+    body += F("smartwatermeter_free_heap_bytes ");
+    body += String(ESP.getFreeHeap());
+    body += F("\n");
 
     // RSSI имеет смысл только в режиме клиента
     if (wifiConnected) {
-      body += "# HELP smartwatermeter_wifi_rssi_dbm WiFi signal strength\n";
-      body += "# TYPE smartwatermeter_wifi_rssi_dbm gauge\n";
-      body += "smartwatermeter_wifi_rssi_dbm " + String(WiFi.RSSI()) + "\n";
+      body += F("# HELP smartwatermeter_wifi_rssi_dbm WiFi signal strength\n");
+      body += F("# TYPE smartwatermeter_wifi_rssi_dbm gauge\n");
+      body += F("smartwatermeter_wifi_rssi_dbm ");
+      body += String(WiFi.RSSI());
+      body += F("\n");
     }
 
-    body += "# HELP smartwatermeter_sensor_present Sensor is currently readable\n";
-    body += "# TYPE smartwatermeter_sensor_present gauge\n";
+    body += F("# HELP smartwatermeter_sensor_present Sensor is currently readable\n");
+    body += F("# TYPE smartwatermeter_sensor_present gauge\n");
     // Метки в нижнем регистре — те же значения, что у температур,
     // иначе серии не соединить по sensor в PromQL.
     // Порядок каналов: [0]=Cold, [1]=Hot, [2]=Return, [3]=Supply
     const char* chNames[NUM_SENSORS] = { "cold", "hot", "return", "supply" };
     for (int i = 0; i < NUM_SENSORS; i++) {
-      body += "smartwatermeter_sensor_present{sensor=\"";
+      body += F("smartwatermeter_sensor_present{sensor=\"");
       body += chNames[i];
-      body += "\"} ";
+      body += F("\"} ");
       body += tempSensors.isFound(i) ? "1" : "0";
-      body += "\n";
+      body += F("\n");
     }
 
-    body += "# HELP smartwatermeter_reed_closed Reed switch is currently closed\n";
-    body += "# TYPE smartwatermeter_reed_closed gauge\n";
-    body += "smartwatermeter_reed_closed{type=\"hot\"} " + String(meterHot.isClosed() ? 1 : 0) + "\n";
-    body += "smartwatermeter_reed_closed{type=\"cold\"} " + String(meterCold.isClosed() ? 1 : 0) + "\n";
+    body += F("# HELP smartwatermeter_reed_closed Reed switch is currently closed\n");
+    body += F("# TYPE smartwatermeter_reed_closed gauge\n");
+    body += F("smartwatermeter_reed_closed{type=\"hot\"} ");
+    body += String(meterHot.isClosed() ? 1 : 0);
+    body += F("\n");
+    body += F("smartwatermeter_reed_closed{type=\"cold\"} ");
+    body += String(meterCold.isClosed() ? 1 : 0);
+    body += F("\n");
 
-    body += "# HELP smartwatermeter_calibrating Whether calibration is in progress\n";
-    body += "# TYPE smartwatermeter_calibrating gauge\n";
-    body += "smartwatermeter_calibrating " + String(tempSensors.isCalibrating() ? "1" : "0") + "\n";
+    body += F("# HELP smartwatermeter_calibrating Whether calibration is in progress\n");
+    body += F("# TYPE smartwatermeter_calibrating gauge\n");
+    body += F("smartwatermeter_calibrating ");
+    body += String(tempSensors.isCalibrating() ? "1" : "0");
+    body += F("\n");
 
     request->send(200, "text/plain; version=0.0.4; charset=utf-8", body);
   });
@@ -1210,36 +1281,70 @@ void trySendEmail(const String &subject, const String &body) {
 
 void sendDailyReport() {
   String body = String(deviceName) + " - Daily Report\n";
-  body += "================================\n\n";
+  body += F("================================\n\n");
   if (ptm) {
-    body += "Date: " + String(ptm->tm_mday) + "." + String(ptm->tm_mon + 1)
-          + "." + String(ptm->tm_year + 1900) + "\n";
-    body += "Time: " + String(ptm->tm_hour) + ":" + String(ptm->tm_min)
-          + ":" + String(ptm->tm_sec) + "\n\n";
+    body += F("Date: ");
+    body += String(ptm->tm_mday);
+    body += F(".");
+    body += String(ptm->tm_mon + 1);
+    body += F(".");
+    body += String(ptm->tm_year + 1900);
+    body += F("\n");
+    body += F("Time: ");
+    body += String(ptm->tm_hour);
+    body += F(":");
+    body += String(ptm->tm_min);
+    body += F(":");
+    body += String(ptm->tm_sec);
+    body += F("\n\n");
   }
-  body += "=== Temperatures ===\n";
-  body += "Hot: " + TemperatureSensors::formatTemp(tempSensors.getTempGVS()) + " C\n";
-  body += "Cold: " + TemperatureSensors::formatTemp(tempSensors.getTempHVS()) + " C\n";
-  body += "Heating Supply: " + TemperatureSensors::formatTemp(tempSensors.getTempSupply()) + " C\n";
-  body += "Heating Return: " + TemperatureSensors::formatTemp(tempSensors.getTempReturn()) + " C\n\n";
-  body += "=== Meter Readings ===\n";
-  body += "Hot: " + String(config.data.meterHotM3, 3) + " m3\n";
-  body += "Cold: " + String(config.data.meterColdM3, 3) + " m3\n\n";
+  body += F("=== Temperatures ===\n");
+  body += F("Hot: ");
+  body += TemperatureSensors::formatTemp(tempSensors.getTempGVS());
+  body += F(" C\n");
+  body += F("Cold: ");
+  body += TemperatureSensors::formatTemp(tempSensors.getTempHVS());
+  body += F(" C\n");
+  body += F("Heating Supply: ");
+  body += TemperatureSensors::formatTemp(tempSensors.getTempSupply());
+  body += F(" C\n");
+  body += F("Heating Return: ");
+  body += TemperatureSensors::formatTemp(tempSensors.getTempReturn());
+  body += F(" C\n\n");
+  body += F("=== Meter Readings ===\n");
+  body += F("Hot: ");
+  body += String(config.data.meterHotM3, 3);
+  body += F(" m3\n");
+  body += F("Cold: ");
+  body += String(config.data.meterColdM3, 3);
+  body += F(" m3\n\n");
   if (config.data.filterEnabled) {
-    body += "=== Filter Guard ===\n";
-    body += "Trips this period: " + String(filterGuard.trips()) + "\n";
-    body += "Max cold water: ";
-    body += (filterGuard.hasMaxTemp()
-      ? TemperatureSensors::formatTemp(filterGuard.maxTempC()) : String("n/a")) + " C\n";
-    body += "Inlet shut for: " + String(filterGuard.closedSec() / 60) + " min\n";
-    body += "Valve now: " + String(filterGuard.isClosed() ? "CLOSED" : "open") + "\n";
+    body += F("=== Filter Guard ===\n");
+    body += F("Trips this period: ");
+    body += String(filterGuard.trips());
+    body += F("\n");
+    body += F("Max cold water: ");
+    body += (filterGuard.hasMaxTemp() ? TemperatureSensors::formatTemp(filterGuard.maxTempC()) : String("n/a"));
+    body += F(" C\n");
+    body += F("Inlet shut for: ");
+    body += String(filterGuard.closedSec() / 60);
+    body += F(" min\n");
+    body += F("Valve now: ");
+    body += String(filterGuard.isClosed() ? "CLOSED" : "open");
+    body += F("\n");
     if (filterGuard.isSensorLost()) body += "WARNING: cold sensor not responding\n";
-    body += "\n";
+    body += F("\n");
   }
-  body += "=== System Info ===\n";
-  body += "Uptime: " + String(millis() / 3600000) + " hours\n";
-  body += String("WiFi: ") + (wifiConnected ? "Connected" : "Disconnected") + "\n";
-  body += "IP: " + (wifiConnected ? WiFi.localIP().toString() : "N/A") + "\n";
+  body += F("=== System Info ===\n");
+  body += F("Uptime: ");
+  body += String(millis() / 3600000);
+  body += F(" hours\n");
+  body += String("WiFi: ");
+  body += (wifiConnected ? "Connected" : "Disconnected");
+  body += F("\n");
+  body += F("IP: ");
+  body += (wifiConnected ? WiFi.localIP().toString() : "N/A");
+  body += F("\n");
   trySendEmail("Daily Report - SmartWaterMeter", body);
   // Статистика фильтра — за период между отчётами, а не с загрузки
   filterGuard.resetStats();
@@ -1291,13 +1396,24 @@ void handleFilterAlerts() {
 
   String subject = String("Filter Guard: ") + FilterGuard::eventName(a.ev);
   String body = String(deviceName) + " - Filter Guard\n";
-  body += "================================\n\n";
-  body += "Event: " + String(FilterGuard::eventName(a.ev)) + "\n";
-  body += "Cold water: " + TemperatureSensors::formatTemp(a.tempC) + " C\n";
-  body += "Thresholds: " + String(filterGuard.onThreshold(), 1) + " / "
-        + String(filterGuard.offThreshold(), 1) + " C\n";
-  body += "Valve now: " + String(filterGuard.isClosed() ? "CLOSED" : "open") + "\n";
-  body += "Trips this period: " + String(filterGuard.trips()) + "\n";
+  body += F("================================\n\n");
+  body += F("Event: ");
+  body += String(FilterGuard::eventName(a.ev));
+  body += F("\n");
+  body += F("Cold water: ");
+  body += TemperatureSensors::formatTemp(a.tempC);
+  body += F(" C\n");
+  body += F("Thresholds: ");
+  body += String(filterGuard.onThreshold(), 1);
+  body += F(" / ");
+  body += String(filterGuard.offThreshold(), 1);
+  body += F(" C\n");
+  body += F("Valve now: ");
+  body += String(filterGuard.isClosed() ? "CLOSED" : "open");
+  body += F("\n");
+  body += F("Trips this period: ");
+  body += String(filterGuard.trips());
+  body += F("\n");
   trySendEmail(subject, body);
 }
 

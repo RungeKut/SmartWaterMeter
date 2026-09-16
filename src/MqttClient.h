@@ -200,16 +200,32 @@ private:
                  + _id + "/" + e.object + "/config";
 
     String p = "{";
-    p += "\"name\":\"" + String(e.name) + "\",";
-    p += "\"uniq_id\":\"" + String(_id) + "_" + e.object + "\",";
-    p += "\"avty_t\":\"" + String(_base) + "/status\",";
+    p += F("\"name\":\"");
+    p += String(e.name);
+    p += F("\",");
+    p += F("\"uniq_id\":\"");
+    p += String(_id);
+    p += F("_");
+    p += e.object;
+    p += F("\",");
+    p += F("\"avty_t\":\"");
+    p += String(_base);
+    p += F("/status\",");
 
     if (e.valueKey) {
-      p += "\"stat_t\":\"" + String(_base) + "/state\",";
-      p += "\"val_tpl\":\"{{ value_json." + String(e.valueKey) + " }}\",";
+      p += F("\"stat_t\":\"");
+      p += String(_base);
+      p += F("/state\",");
+      p += F("\"val_tpl\":\"{{ value_json.");
+      p += String(e.valueKey);
+      p += F(" }}\",");
     }
     if (e.command) {
-      p += "\"cmd_t\":\"" + String(_base) + "/cmd/" + e.command + "\",";
+      p += F("\"cmd_t\":\"");
+      p += String(_base);
+      p += F("/cmd/");
+      p += e.command;
+      p += F("\",");
     }
     if (e.deviceClass) p += "\"dev_cla\":\"" + String(e.deviceClass) + "\",";
     if (e.stateClass)  p += "\"stat_cla\":\"" + String(e.stateClass) + "\",";
@@ -219,10 +235,16 @@ private:
 
     // Общий блок устройства — по нему HA группирует все сущности
     // в одну карточку
-    p += "\"dev\":{\"ids\":[\"" + String(_id) + "\"],";
-    p += "\"name\":\"" + String(_friendly) + "\",";
-    p += "\"mdl\":\"Wemos D1 mini\",\"mf\":\"DIY\",";
-    p += "\"sw\":\"" + String(_swVersion) + "\"}}";
+    p += F("\"dev\":{\"ids\":[\"");
+    p += String(_id);
+    p += F("\"],");
+    p += F("\"name\":\"");
+    p += String(_friendly);
+    p += F("\",");
+    p += F("\"mdl\":\"Wemos D1 mini\",\"mf\":\"DIY\",");
+    p += F("\"sw\":\"");
+    p += String(_swVersion);
+    p += F("\"}}");
 
     // retain = true: HA восстановит сущности после перезапуска,
     // не дожидаясь следующей загрузки устройства
