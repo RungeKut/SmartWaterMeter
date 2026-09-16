@@ -84,6 +84,30 @@ WsRxBuffer wsRx;
 // Момент отложенной перезагрузки, 0 = не запланирована
 uint32_t restartAtMs = 0;
 
+// Отложенная отправка снимка состояния.
+//
+// Раньше три документа собирались и отправлялись прямо в колбэке
+// ESPAsyncTCP. Колбэк выполняется в контексте сетевого стека, где
+// стека заметно меньше, чем в loop(), а ArduinoJson с сериализацией в
+// String — не та работа, которую там стоит делать. Это осталось
+// единственным местом, где плата ещё перезагружалась при открытии
+// вкладки: отдача страницы давала 0 падений из 10, подключение
+// WebSocket — 1-2 из 10.
+//
+// Теперь колбэк только ставит отметку, а сообщения уходят из loop(),
+// по одному за проход.
+#define SNAPSHOT_SLOTS   3
+#define SNAPSHOT_STEP_MS 40
+
+struct SnapshotJob {
+  uint32_t clientId;
+  uint8_t  step;     // 0 = слот свободен, 1..3 = какое сообщение слать
+};
+SnapshotJob snapshots[SNAPSHOT_SLOTS];
+uint32_t snapshotLastMs = 0;
+uint32_t snapshotDropped = 0;   // не нашлось свободного слота
+
+
 // Алерты фильтра отправляются НЕ из обработчика события: письмо через
 // ESP_Mail_Client блокирует loop() на секунды, а обработчик вызывается
 // из середины разбора датчиков. Складываем в маленькое кольцо и
@@ -138,10 +162,11 @@ void wsSendJson(AsyncWebSocketClient *client, const JsonDocument &doc);
 void wsBroadcastJson(const JsonDocument &doc);
 void wsBroadcastTelemetry(const JsonDocument &doc);
 void handleWsMessage(AsyncWebSocketClient *client, const String &msg);
-void sendFullState(AsyncWebSocketClient *client);
 void sendSystemState(AsyncWebSocketClient *client);
 void sendConfigState(AsyncWebSocketClient *client);
 void sendDiagState(AsyncWebSocketClient *client);
+void requestSnapshot(uint32_t clientId);
+void handleSnapshots(uint32_t now);
 void setupHttpRoutes();
 void keepOrSet(char *dst, JsonVariantConst src, size_t dstSize);
 void fillSystemState(JsonDocument &doc);
@@ -453,7 +478,9 @@ void setup() {
       // «призрак» остаётся в списке и продолжает получать телеметрию
       // раз в секунду. Без пингов такие клиенты копились.
       client->keepAlivePeriod(10);
-      sendFullState(client);
+      // Не отправляем здесь: колбэк выполняется в контексте сетевого
+      // стека. Только ставим отметку, отправит loop().
+      requestSnapshot(client->id());
     } else if (type == WS_EVT_DISCONNECT) {
       Log.printf("[WS] Client #%u disconnected\n", client->id());
     } else if (type == WS_EVT_DATA) {
@@ -656,6 +683,9 @@ void loop() {
     // как снимаются базовые температуры.
     tempSensors.startCalibration(calibrateRequestedIndex, onCalibrateDone);
   }
+
+  // ---- Снимок состояния: по одному сообщению за проход ----
+  handleSnapshots(now);
 
   // ---- Алерты фильтра (письма блокирующие, поэтому здесь) ----
   handleFilterAlerts();
@@ -941,11 +971,52 @@ void sendDiagState(AsyncWebSocketClient *client) {
   wsSendJson(client, doc);
 }
 
-void sendFullState(AsyncWebSocketClient *client) {
-  sendSystemState(client);
-  sendConfigState(client);
-  sendDiagState(client);
+// Поставить снимок в очередь. Повторный запрос от того же клиента
+// перезапускает отправку с начала, а не заводит второй слот.
+void requestSnapshot(uint32_t clientId) {
+  for (int i = 0; i < SNAPSHOT_SLOTS; i++) {
+    if (snapshots[i].step != 0 && snapshots[i].clientId == clientId) {
+      snapshots[i].step = 1;
+      return;
+    }
+  }
+  for (int i = 0; i < SNAPSHOT_SLOTS; i++) {
+    if (snapshots[i].step == 0) {
+      snapshots[i].clientId = clientId;
+      snapshots[i].step = 1;
+      return;
+    }
+  }
+  snapshotDropped++;
 }
+
+// Один шаг отправки за проход loop(). Клиент мог отвалиться, пока
+// снимок ждал очереди, — тогда слот просто освобождается.
+void handleSnapshots(uint32_t now) {
+  if (now - snapshotLastMs < SNAPSHOT_STEP_MS) return;
+
+  for (int i = 0; i < SNAPSHOT_SLOTS; i++) {
+    if (snapshots[i].step == 0) continue;
+
+    AsyncWebSocketClient *c = ws.client(snapshots[i].clientId);
+    if (c == nullptr || c->status() != WS_CONNECTED) {
+      snapshots[i].step = 0;
+      continue;
+    }
+    // Очередь клиента занята — не толкаем, попробуем в следующий раз
+    if (!ws.availableForWrite(snapshots[i].clientId)) return;
+
+    switch (snapshots[i].step) {
+      case 1: sendSystemState(c); break;
+      case 2: sendConfigState(c); break;
+      case 3: sendDiagState(c);   break;
+    }
+    snapshots[i].step = (snapshots[i].step >= 3) ? 0 : snapshots[i].step + 1;
+    snapshotLastMs = now;
+    return;   // не больше одного сообщения за проход
+  }
+}
+
 
 void handleWsMessage(AsyncWebSocketClient *client, const String &msg) {
   JsonDocument doc;
@@ -962,7 +1033,8 @@ void handleWsMessage(AsyncWebSocketClient *client, const String &msg) {
   }
 
   if (strcmp(type, "getFullState") == 0) {
-    sendFullState(client);
+    // handleWsMessage тоже вызывается из колбэка — откладываем
+    requestSnapshot(client->id());
   }
   else if (strcmp(type, "saveConfig") == 0) {
     JsonObject cfg = doc["config"];
