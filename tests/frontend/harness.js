@@ -84,17 +84,41 @@ function createHarness(file) {
     Date, JSON, Math, Object, String, Number,
     parseInt, parseFloat, isNaN,
     setInterval() {}, setTimeout() {}, clearTimeout() {},
-    WebSocket: function () {},
+    // Константа OPEN нужна: saveConfig сверяет с ней ws.readyState
+    WebSocket: Object.assign(function () {}, { OPEN: 1, CONNECTING: 0, CLOSING: 2, CLOSED: 3 }),
     location: { host: 'test', protocol: 'http:' },
   };
   ctx.window = ctx;
   vm.createContext(ctx);
   vm.runInContext(code, ctx);
 
+  // Подставной WebSocket: копит отправленное, чтобы тест увидел, что
+  // именно уходит на устройство при нажатии Save.
+  const sent = [];
+  const installWs = (readyState = 1) => {
+    vm.runInContext(
+      'ws = { readyState: ' + readyState + ', send: function (s) { __sent.push(s); } };', ctx);
+  };
+  ctx.__sent = sent;
+
   return {
     ctx,
     html,
     el: getElementById,
+    sent,
+    installWs,
+    // Разобрать последнее отправленное сообщение
+    lastSent: () => (sent.length ? JSON.parse(sent[sent.length - 1]) : null),
+    // Проиграть подключение так, как это делает устройство: три сообщения
+    connect: (cfgOverrides, sys) => {
+      vm.runInContext('state = null; setSettingsDirty(false); settingsLoaded = false;', ctx);
+      const sysMsg = Object.assign({ type: 'fullState', uptime_sec: 10, time_valid: false }, sys || {});
+      vm.runInContext('handleMessage(' + JSON.stringify(sysMsg) + ');', ctx);
+      vm.runInContext('handleMessage(' + JSON.stringify(
+        { type: 'configState', config: baseConfig(cfgOverrides) }) + ');', ctx);
+      vm.runInContext('handleMessage(' + JSON.stringify(
+        { type: 'diagState', meterDiag: [] }) + ');', ctx);
+    },
     // Выполнить выражение внутри контекста скрипта (видит let-переменные)
     exec: (src) => vm.runInContext(src, ctx),
     // Подсунуть состояние, как будто пришёл fullState

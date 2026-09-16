@@ -37,6 +37,7 @@
 #include "FailsafeOTA.h"
 #include "MqttClient.h"
 #include "FilterGuard.h"
+#include "WsRxBuffer.h"
 
 // SMTP
 #include <ESP_Mail_Client.h>
@@ -68,6 +69,14 @@ FilterGuard filterGuard;
 // ESP.restart() значение перетирается, а узнать, был ли это watchdog
 // или исключение, нужно именно про ПРЕДЫДУЩИЙ запуск.
 String resetReason;
+
+// Сборка входящих WebSocket-сообщений из кусков. Сообщение длиннее
+// одного TCP-сегмента (на ESP8266 около 536 байт) приезжает
+// несколькими вызовами WS_EVT_DATA.
+WsRxBuffer wsRx;
+
+// Момент отложенной перезагрузки, 0 = не запланирована
+uint32_t restartAtMs = 0;
 
 // Алерты фильтра отправляются НЕ из обработчика события: письмо через
 // ESP_Mail_Client блокирует loop() на секунды, а обработчик вызывается
@@ -436,10 +445,20 @@ void setup() {
       Log.printf("[WS] Client #%u disconnected\n", client->id());
     } else if (type == WS_EVT_DATA) {
       AwsFrameInfo *info = (AwsFrameInfo*)arg;
-      if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
-        // data не гарантированно NUL-terminated — берём ровно len байт
+      if (info->opcode != WS_TEXT && info->opcode != WS_CONTINUATION) return;
+
+      // Раньше здесь стояло условие info->len == len, то есть «всё
+      // сообщение пришло одним куском». Пока saveConfig весил около
+      // 500 байт, оно выполнялось. С полями защиты фильтра сообщение
+      // выросло до ~700 байт, TCP поделил его надвое — и настройки
+      // молча перестали сохраняться. См. pitfalls.md §30.
+      bool complete = wsRx.feed(client->id(), (uint8_t)info->opcode,
+                                info->final, (uint32_t)info->index,
+                                (uint32_t)len, (uint32_t)info->len, data);
+      if (complete) {
         String payload;
-        payload.concat((const char*)data, len);
+        payload.concat(wsRx.message(), wsRx.length());
+        wsRx.reset();
         handleWsMessage(client, payload);
       }
     }
@@ -626,8 +645,17 @@ void loop() {
   handleFilterAlerts();
 
   // ---- Restart ----
-  if (needsRestart && now > 10000) {
-    Log.println("[System] Restart...");
+  //
+  // Не сразу: ответ saveConfigResult уже поставлен в очередь отправки,
+  // но ESPAsyncTCP отдаёт его асинхронно. Перезагрузка в том же проходе
+  // рвала соединение раньше, чем ответ уходил, и браузер не получал
+  // подтверждения — а вместе с ним не снимался флаг несохранённых
+  // правок. Полсекунды хватает, чтобы очередь опустела.
+  if (needsRestart && restartAtMs == 0) {
+    restartAtMs = now + 500;
+  }
+  if (restartAtMs != 0 && now > 10000 && (int32_t)(now - restartAtMs) >= 0) {
+    Log.println(F("[System] Restart..."));
     ESP.restart();
   }
 
@@ -1258,6 +1286,14 @@ void setupHttpRoutes() {
     body += F("# TYPE smartwatermeter_heap_max_block_bytes gauge\n");
     body += F("smartwatermeter_heap_max_block_bytes ");
     body += String(ESP.getMaxFreeBlockSize());
+    body += F("\n");
+
+    // Отброшенные куски входящих сообщений. Ноль — норма; рост
+    // означает, что команды с веб-интерфейса до платы не доезжают.
+    body += F("# HELP smartwatermeter_ws_rx_drops_total Dropped inbound WS chunks\n");
+    body += F("# TYPE smartwatermeter_ws_rx_drops_total counter\n");
+    body += F("smartwatermeter_ws_rx_drops_total ");
+    body += String(wsRx.drops());
     body += F("\n");
 
     // Причина последнего сброса: отличает штатную перезагрузку от

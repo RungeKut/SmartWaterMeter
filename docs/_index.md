@@ -46,6 +46,7 @@
 | — OTA и fail-safe (`FailsafeOTA.h`) | `docs/modules/ota.md` |
 | — MQTT и Home Assistant (`MqttClient.h`) | `docs/modules/mqtt.md` |
 | — Защита осмотического фильтра (`FilterGuard.h`) | `docs/modules/filter-guard.md` |
+| — Сборка входящих WS-сообщений (`WsRxBuffer.h`) | описан в `docs/websocket.md` |
 | Протокол WebSocket | `docs/websocket.md` |
 | Калибровка DS18B20 | `docs/calibration.md` |
 | Фронтенд (SPA, вкладки) | `docs/frontend.md` |
